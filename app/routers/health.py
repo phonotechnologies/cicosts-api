@@ -3,42 +3,43 @@ Health check endpoints.
 
 Reference: spec-error-handling.md § 7.2
 """
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter
 from sqlalchemy import text
 
-from app.database import get_db
 from app.config import settings
 
 router = APIRouter()
 
 
 @router.get("/health")
-async def health_check(db: Session = Depends(get_db)):
+async def health_check():
     """
     Health check endpoint.
 
     Checks:
     - API is responding
-    - Database connection
+    - Database connection (if configured)
     """
     checks = {
         "api": "ok",
-        "database": "ok",
         "environment": settings.ENVIRONMENT,
     }
 
-    # Test database connection
-    try:
-        db.execute(text("SELECT 1"))
-    except Exception as e:
-        checks["database"] = f"error: {str(e)[:100]}"
+    # Test database connection if configured
+    if settings.DATABASE_URL:
+        try:
+            from app.database import get_engine
+            engine = get_engine()
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            checks["database"] = "ok"
+        except Exception as e:
+            checks["database"] = f"error: {str(e)[:100]}"
+    else:
+        checks["database"] = "not_configured"
 
     # Determine overall status
-    status = "ok" if all(
-        v == "ok" or k in ["environment"]
-        for k, v in checks.items()
-    ) else "degraded"
+    status = "ok" if checks.get("database") == "ok" else "degraded"
 
     return {
         "status": status,
