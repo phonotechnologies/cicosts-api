@@ -1,5 +1,7 @@
 # CICosts API
 
+[![API Tests](https://github.com/phonotechnologies/cicosts-api/actions/workflows/api-tests.yml/badge.svg)](https://github.com/phonotechnologies/cicosts-api/actions/workflows/api-tests.yml)
+
 FastAPI backend for CICosts - Track and optimize your CI/CD costs.
 
 ## Architecture
@@ -107,6 +109,27 @@ cicosts-api/
 ### Webhooks
 - `POST /api/v1/webhooks/github` - GitHub webhook receiver
 - `POST /api/v1/webhooks/stripe` - Stripe webhook receiver
+
+## Testing
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run with coverage
+python -m pytest tests/ --cov=app --cov-report=html
+
+# Run specific test file
+python -m pytest tests/test_cost_calculator.py -v
+```
+
+### Seed Data
+
+For local development, populate the database with sample data:
+
+```bash
+python scripts/seed_data.py
+```
 
 ## Deployment
 
