@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = ""
     SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""  # Anon key for REST API
 
     # GitHub App
     GITHUB_APP_ID: str = ""

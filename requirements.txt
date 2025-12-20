@@ -10,6 +10,9 @@ sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 alembic==1.13.1
 
+# Supabase (uses REST API - avoids IPv6 issues in Lambda)
+supabase==2.3.0
+
 # Authentication
 python-jose[cryptography]==3.3.0
 httpx==0.26.0

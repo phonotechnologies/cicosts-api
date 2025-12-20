@@ -4,7 +4,7 @@ Health check endpoints.
 Reference: spec-error-handling.md § 7.2
 """
 from fastapi import APIRouter
-from sqlalchemy import text
+import httpx
 
 from app.config import settings
 
@@ -18,21 +18,29 @@ async def health_check():
 
     Checks:
     - API is responding
-    - Database connection (if configured)
+    - Database connection via Supabase REST API
     """
     checks = {
         "api": "ok",
         "environment": settings.ENVIRONMENT,
     }
 
-    # Test database connection if configured
-    if settings.DATABASE_URL:
+    # Test Supabase connection via REST API (avoids IPv6 issues)
+    if settings.SUPABASE_URL and settings.SUPABASE_KEY:
         try:
-            from app.database import get_engine
-            engine = get_engine()
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            checks["database"] = "ok"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/",
+                    headers={
+                        "apikey": settings.SUPABASE_KEY,
+                        "Authorization": f"Bearer {settings.SUPABASE_KEY}"
+                    },
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    checks["database"] = "ok"
+                else:
+                    checks["database"] = f"error: HTTP {response.status_code}"
         except Exception as e:
             checks["database"] = f"error: {str(e)[:100]}"
     else:
