@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, asc, case
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -56,6 +56,33 @@ class RecentRun(BaseModel):
     cost: float
     duration: str
     time: str
+
+
+class WorkflowItem(BaseModel):
+    """Workflow item for the workflows list."""
+    id: str
+    name: str
+    repo: str
+    last_run_time: str
+    run_count: int
+    total_cost: float
+    avg_duration: str
+    success_rate: float
+
+
+class WorkflowsResponse(BaseModel):
+    """Response for workflows list endpoint."""
+    workflows: List[WorkflowItem]
+    total: int
+    repositories: List[str]
+
+
+class WorkflowsSummary(BaseModel):
+    """Summary statistics for workflows."""
+    total_workflows: int
+    total_runs: int
+    total_cost: float
+    avg_cost_per_run: float
 
 
 # Endpoints
@@ -259,6 +286,187 @@ async def get_recent_runs(
         ))
 
     return runs
+
+
+@router.get("/workflows", response_model=WorkflowsResponse)
+async def get_workflows(
+    org_id: UUID = Query(..., description="Organization ID"),
+    days: int = Query(30, ge=1, le=90, description="Number of days to look back"),
+    repo: Optional[str] = Query(None, description="Filter by repository name"),
+    status: Optional[str] = Query(None, description="Filter by status: all, success, failed"),
+    sort_by: str = Query("total_cost", description="Sort by: name, repo, last_run, run_count, total_cost, avg_duration, success_rate"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    search: Optional[str] = Query(None, description="Search by workflow or repo name"),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all workflows with aggregated statistics.
+
+    Supports filtering by repository, status, and search.
+    Supports sorting by any column.
+    """
+    now = datetime.utcnow()
+    start_date = now - timedelta(days=days)
+
+    # Build base query with aggregations
+    # Calculate success rate as percentage of runs with conclusion='success'
+    success_case = case(
+        (WorkflowRun.conclusion == "success", 1),
+        else_=0
+    )
+
+    query = db.query(
+        WorkflowRun.workflow_name,
+        WorkflowRun.repo_name,
+        func.count().label("run_count"),
+        func.sum(WorkflowRun.cost_usd).label("total_cost"),
+        func.avg(WorkflowRun.billable_ms).label("avg_billable_ms"),
+        func.max(WorkflowRun.created_at).label("last_run_time"),
+        (func.sum(success_case) * 100.0 / func.count()).label("success_rate"),
+    ).filter(
+        WorkflowRun.org_id == org_id,
+        WorkflowRun.completed_at >= start_date,
+    )
+
+    # Apply repository filter
+    if repo:
+        query = query.filter(WorkflowRun.repo_name.ilike(f"%{repo}%"))
+
+    # Apply status filter based on success rate
+    # This filters workflows where all runs match the status
+    # For more granular filtering, we'd need to filter before aggregation
+
+    # Apply search filter
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            (WorkflowRun.workflow_name.ilike(search_pattern)) |
+            (WorkflowRun.repo_name.ilike(search_pattern))
+        )
+
+    # Group by workflow and repo
+    query = query.group_by(
+        WorkflowRun.workflow_name,
+        WorkflowRun.repo_name,
+    )
+
+    # Apply status filter on aggregated results
+    if status == "success":
+        query = query.having(func.sum(success_case) * 100.0 / func.count() >= 90)
+    elif status == "failed":
+        query = query.having(func.sum(success_case) * 100.0 / func.count() < 50)
+
+    # Determine sort column
+    sort_columns = {
+        "name": WorkflowRun.workflow_name,
+        "repo": WorkflowRun.repo_name,
+        "last_run": "last_run_time",
+        "run_count": "run_count",
+        "total_cost": "total_cost",
+        "avg_duration": "avg_billable_ms",
+        "success_rate": "success_rate",
+    }
+
+    sort_col = sort_columns.get(sort_by, "total_cost")
+
+    # Apply sorting
+    if sort_order == "asc":
+        query = query.order_by(asc(sort_col))
+    else:
+        query = query.order_by(desc(sort_col))
+
+    results = query.all()
+
+    # Get unique repositories for filter dropdown
+    repos_query = db.query(
+        func.distinct(WorkflowRun.repo_name)
+    ).filter(
+        WorkflowRun.org_id == org_id,
+        WorkflowRun.completed_at >= start_date,
+    ).all()
+
+    repositories = sorted([
+        r[0].split("/")[-1] if "/" in r[0] else r[0]
+        for r in repos_query
+    ])
+
+    # Build response
+    workflows = []
+    for r in results:
+        # Format average duration
+        avg_ms = int(r.avg_billable_ms or 0)
+        avg_duration = _format_duration(avg_ms)
+
+        # Format last run time
+        last_run_time = _format_time_ago(r.last_run_time, now) if r.last_run_time else "Never"
+
+        # Extract repo name without org prefix
+        repo_name = r.repo_name.split("/")[-1] if "/" in r.repo_name else r.repo_name
+
+        # Create workflow ID from name and repo
+        workflow_id = f"{r.repo_name}:{r.workflow_name}".replace("/", "-").replace(" ", "-").lower()
+
+        workflows.append(WorkflowItem(
+            id=workflow_id,
+            name=r.workflow_name or "Unknown",
+            repo=repo_name,
+            last_run_time=last_run_time,
+            run_count=r.run_count or 0,
+            total_cost=round(float(r.total_cost or 0), 2),
+            avg_duration=avg_duration,
+            success_rate=round(float(r.success_rate or 0), 1),
+        ))
+
+    return WorkflowsResponse(
+        workflows=workflows,
+        total=len(workflows),
+        repositories=repositories,
+    )
+
+
+@router.get("/workflows/summary", response_model=WorkflowsSummary)
+async def get_workflows_summary(
+    org_id: UUID = Query(..., description="Organization ID"),
+    days: int = Query(30, ge=1, le=90, description="Number of days to look back"),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get summary statistics for all workflows.
+    """
+    now = datetime.utcnow()
+    start_date = now - timedelta(days=days)
+
+    # Count unique workflows
+    workflow_count = db.query(
+        func.count(func.distinct(
+            func.concat(WorkflowRun.repo_name, ":", WorkflowRun.workflow_name)
+        ))
+    ).filter(
+        WorkflowRun.org_id == org_id,
+        WorkflowRun.completed_at >= start_date,
+    ).scalar() or 0
+
+    # Get total runs and cost
+    stats = db.query(
+        func.count().label("total_runs"),
+        func.sum(WorkflowRun.cost_usd).label("total_cost"),
+    ).filter(
+        WorkflowRun.org_id == org_id,
+        WorkflowRun.completed_at >= start_date,
+    ).first()
+
+    total_runs = stats.total_runs or 0
+    total_cost = float(stats.total_cost or 0)
+    avg_cost_per_run = total_cost / total_runs if total_runs > 0 else 0
+
+    return WorkflowsSummary(
+        total_workflows=workflow_count,
+        total_runs=total_runs,
+        total_cost=round(total_cost, 2),
+        avg_cost_per_run=round(avg_cost_per_run, 2),
+    )
 
 
 # Helper functions
