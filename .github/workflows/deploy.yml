@@ -12,6 +12,10 @@ env:
   LAMBDA_FUNCTION_API: cicosts-prod-api
   LAMBDA_FUNCTION_WORKERS: cicosts-prod-workers
 
+permissions:
+  id-token: write   # Required for OIDC
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -81,11 +85,10 @@ jobs:
         with:
           name: lambda-package
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy API Lambda
