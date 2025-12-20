@@ -9,6 +9,7 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::***REMOVED***:role/cicosts-prod-github-actions-api
   LAMBDA_FUNCTION_API: cicosts-prod-api
   LAMBDA_FUNCTION_WORKERS: cicosts-prod-workers
 
@@ -88,7 +89,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy API Lambda
