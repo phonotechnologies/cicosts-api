@@ -6,7 +6,10 @@ Reference: infrastructure/eventbridge.tf
 """
 import json
 import logging
-from typing import Any
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Optional
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +67,9 @@ def handle_sqs_webhooks(records: list) -> dict:
             body = json.loads(record["body"])
             event_type = body.get("event_type")
             payload = body.get("payload", {})
+            delivery_id = body.get("delivery_id")
 
-            logger.info(f"Processing webhook: {event_type}")
+            logger.info(f"Processing webhook: {event_type} (delivery: {delivery_id})")
 
             if event_type == "workflow_run":
                 _process_workflow_run(payload)
@@ -77,7 +81,7 @@ def handle_sqs_webhooks(records: list) -> dict:
                 logger.info(f"Ignoring event type: {event_type}")
 
         except Exception as e:
-            logger.error(f"Failed to process message {record['messageId']}: {e}")
+            logger.error(f"Failed to process message {record['messageId']}: {e}", exc_info=True)
             batch_item_failures.append({
                 "itemIdentifier": record["messageId"]
             })
@@ -85,7 +89,7 @@ def handle_sqs_webhooks(records: list) -> dict:
     return {"batchItemFailures": batch_item_failures}
 
 
-# Job handlers (stubs for now)
+# Job handlers
 
 def _handle_daily_sync(tasks: list) -> dict:
     """Sync GitHub and AWS costs."""
@@ -129,37 +133,386 @@ def _handle_health_check(tasks: list) -> dict:
     return {"status": "ok", "checks": tasks}
 
 
-# Webhook processors (stubs for now)
+# Webhook processors
 
 def _process_workflow_run(payload: dict) -> None:
-    """Process workflow_run webhook."""
+    """
+    Process workflow_run webhook.
+
+    Reference: spec-cost-calculation.md § 4.3
+    """
+    from app.database import get_session_local
+    from app.models.workflow_run import WorkflowRun
+    from app.models.organization import Organization
+
     action = payload.get("action")
     run = payload.get("workflow_run", {})
+    repository = payload.get("repository", {})
+    organization = payload.get("organization", {})
+    sender = payload.get("sender", {})
 
-    logger.info(f"Workflow run {run.get('id')}: {action}")
+    run_id = run.get("id")
+    logger.info(f"Workflow run {run_id}: {action}")
 
-    if action == "completed":
-        # TODO: Calculate costs and store
-        pass
+    # Only process completed runs
+    if action != "completed":
+        logger.info(f"Ignoring workflow_run action: {action}")
+        return
+
+    # Get database session
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+
+    try:
+        # Find organization
+        org = db.query(Organization).filter(
+            Organization.github_org_id == organization.get("id")
+        ).first()
+
+        if not org:
+            logger.warning(f"Organization not found: {organization.get('login')}")
+            return
+
+        # Parse timestamps
+        created_at = _parse_github_timestamp(run.get("created_at"))
+        updated_at = _parse_github_timestamp(run.get("updated_at"))
+        completed_at = _parse_github_timestamp(run.get("run_started_at"))
+
+        # Calculate billable time from usage if available
+        billable_ms = 0
+        timing = run.get("timing", {})
+        if timing:
+            # Sum up billable time from all runner types
+            for runner_type, runner_timing in timing.items():
+                billable_ms += runner_timing.get("total_ms", 0)
+
+        # Check if run already exists
+        existing = db.query(WorkflowRun).filter(
+            WorkflowRun.org_id == org.id,
+            WorkflowRun.github_run_id == run_id,
+        ).first()
+
+        if existing:
+            # Update existing run
+            existing.status = run.get("status", "completed")
+            existing.conclusion = run.get("conclusion")
+            existing.updated_at = updated_at or datetime.utcnow()
+            existing.completed_at = completed_at
+            existing.billable_ms = billable_ms
+            logger.info(f"Updated workflow run {run_id}")
+        else:
+            # Create new run
+            workflow_run = WorkflowRun(
+                org_id=org.id,
+                github_run_id=run_id,
+                repo_name=repository.get("full_name", repository.get("name", "")),
+                repo_id=repository.get("id"),
+                workflow_name=run.get("name", ""),
+                workflow_id=run.get("workflow_id"),
+                run_number=run.get("run_number", 0),
+                status=run.get("status", "completed"),
+                conclusion=run.get("conclusion"),
+                event=run.get("event"),
+                triggered_by=sender.get("login"),
+                created_at=created_at or datetime.utcnow(),
+                updated_at=updated_at or datetime.utcnow(),
+                completed_at=completed_at,
+                billable_ms=billable_ms,
+                cost_usd=Decimal("0"),  # Will be calculated from jobs
+            )
+            db.add(workflow_run)
+            logger.info(f"Created workflow run {run_id}")
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error processing workflow_run: {e}", exc_info=True)
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _process_workflow_job(payload: dict) -> None:
-    """Process workflow_job webhook."""
+    """
+    Process workflow_job webhook.
+
+    This is where we calculate actual costs based on runner type and duration.
+    Reference: spec-cost-calculation.md § 2.1
+    """
+    from app.database import get_session_local
+    from app.models.job import Job
+    from app.models.workflow_run import WorkflowRun
+    from app.models.organization import Organization
+    from app.services.cost_calculator import calculate_job_cost
+
     action = payload.get("action")
     job = payload.get("workflow_job", {})
+    repository = payload.get("repository", {})
+    organization = payload.get("organization", {})
 
-    logger.info(f"Workflow job {job.get('id')}: {action}")
+    job_id = job.get("id")
+    run_id = job.get("run_id")
 
-    if action == "completed":
-        # TODO: Calculate job cost
-        pass
+    logger.info(f"Workflow job {job_id}: {action}")
+
+    # Only process completed jobs
+    if action != "completed":
+        logger.info(f"Ignoring workflow_job action: {action}")
+        return
+
+    # Get database session
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+
+    try:
+        # Find organization
+        org = db.query(Organization).filter(
+            Organization.github_org_id == organization.get("id")
+        ).first()
+
+        if not org:
+            logger.warning(f"Organization not found: {organization.get('login')}")
+            return
+
+        # Parse timestamps
+        created_at = _parse_github_timestamp(job.get("created_at"))
+        started_at = _parse_github_timestamp(job.get("started_at"))
+        completed_at = _parse_github_timestamp(job.get("completed_at"))
+
+        # Calculate billable time
+        billable_ms = 0
+        if started_at and completed_at:
+            billable_ms = int((completed_at - started_at).total_seconds() * 1000)
+
+        # Determine runner type from labels
+        runner_labels = job.get("labels", [])
+        runner_type = _determine_runner_type(runner_labels)
+
+        # Calculate cost
+        cost = calculate_job_cost(runner_type, billable_ms)
+
+        # Check if job already exists
+        existing = db.query(Job).filter(
+            Job.github_job_id == job_id,
+            Job.org_id == org.id,
+        ).first()
+
+        if existing:
+            # Update existing job
+            existing.status = job.get("status", "completed")
+            existing.conclusion = job.get("conclusion")
+            existing.completed_at = completed_at
+            existing.billable_ms = billable_ms
+            existing.cost_usd = cost
+            existing.runner_type = runner_type
+            logger.info(f"Updated job {job_id}, cost: ${cost}")
+        else:
+            # Create new job
+            new_job = Job(
+                id=uuid4(),
+                github_job_id=job_id,
+                org_id=org.id,
+                run_github_id=run_id,
+                repo_name=repository.get("full_name", repository.get("name", "")),
+                job_name=job.get("name", ""),
+                status=job.get("status", "completed"),
+                conclusion=job.get("conclusion"),
+                runner_type=runner_type,
+                billable_ms=billable_ms,
+                cost_usd=cost,
+                created_at=created_at or datetime.utcnow(),
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            db.add(new_job)
+            logger.info(f"Created job {job_id}, cost: ${cost}")
+
+        # Update workflow run total cost
+        _update_workflow_run_cost(db, org.id, run_id)
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error processing workflow_job: {e}", exc_info=True)
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _process_installation(payload: dict) -> None:
-    """Process GitHub App installation webhook."""
+    """
+    Process GitHub App installation webhook.
+
+    Handles: created, deleted, suspend, unsuspend
+    """
+    from app.database import get_session_local
+    from app.models.github_installation import GitHubInstallation
+    from app.models.organization import Organization
+
     action = payload.get("action")
     installation = payload.get("installation", {})
+    sender = payload.get("sender", {})
 
-    logger.info(f"Installation {installation.get('id')}: {action}")
+    installation_id = installation.get("id")
+    account = installation.get("account", {})
 
-    # TODO: Handle install/uninstall
+    logger.info(f"Installation {installation_id}: {action} by {sender.get('login')}")
+
+    # Get database session
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+
+    try:
+        if action == "created":
+            # Check if installation already exists
+            existing = db.query(GitHubInstallation).filter(
+                GitHubInstallation.installation_id == installation_id
+            ).first()
+
+            if existing:
+                # Reactivate if previously uninstalled
+                existing.is_active = True
+                existing.uninstalled_at = None
+                existing.updated_at = datetime.utcnow()
+                logger.info(f"Reactivated installation {installation_id}")
+            else:
+                # Find or create organization
+                org = db.query(Organization).filter(
+                    Organization.github_org_id == account.get("id")
+                ).first()
+
+                org_id = org.id if org else None
+
+                # Create new installation
+                new_installation = GitHubInstallation(
+                    id=uuid4(),
+                    installation_id=installation_id,
+                    account_id=account.get("id"),
+                    account_type=account.get("type", "Organization"),
+                    account_login=account.get("login", ""),
+                    org_id=org_id,
+                    target_type=installation.get("target_type", "Organization"),
+                    repository_selection=installation.get("repository_selection", "all"),
+                    permissions=json.dumps(installation.get("permissions", {})),
+                    events=json.dumps(installation.get("events", [])),
+                    installed_at=datetime.utcnow(),
+                )
+                db.add(new_installation)
+                logger.info(f"Created installation {installation_id} for {account.get('login')}")
+
+        elif action == "deleted":
+            # Mark installation as inactive
+            existing = db.query(GitHubInstallation).filter(
+                GitHubInstallation.installation_id == installation_id
+            ).first()
+
+            if existing:
+                existing.is_active = False
+                existing.uninstalled_at = datetime.utcnow()
+                existing.updated_at = datetime.utcnow()
+                logger.info(f"Deactivated installation {installation_id}")
+
+        elif action == "suspend":
+            existing = db.query(GitHubInstallation).filter(
+                GitHubInstallation.installation_id == installation_id
+            ).first()
+
+            if existing:
+                existing.suspended_at = datetime.utcnow()
+                existing.suspended_by = sender.get("login")
+                existing.updated_at = datetime.utcnow()
+                logger.info(f"Suspended installation {installation_id}")
+
+        elif action == "unsuspend":
+            existing = db.query(GitHubInstallation).filter(
+                GitHubInstallation.installation_id == installation_id
+            ).first()
+
+            if existing:
+                existing.suspended_at = None
+                existing.suspended_by = None
+                existing.updated_at = datetime.utcnow()
+                logger.info(f"Unsuspended installation {installation_id}")
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error processing installation: {e}", exc_info=True)
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+# Helper functions
+
+def _parse_github_timestamp(timestamp: Optional[str]) -> Optional[datetime]:
+    """Parse GitHub ISO 8601 timestamp."""
+    if not timestamp:
+        return None
+    try:
+        # Remove 'Z' suffix and parse
+        if timestamp.endswith("Z"):
+            timestamp = timestamp[:-1] + "+00:00"
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _determine_runner_type(labels: list) -> str:
+    """
+    Determine runner type from job labels.
+
+    Labels like ["ubuntu-latest", "self-hosted"] - we pick the most specific.
+    """
+    # Priority order for runner type detection
+    runner_keywords = [
+        "macos-latest-xlarge", "macos-latest-large",
+        "macos-14", "macos-13", "macos-12", "macos-latest",
+        "windows-2022", "windows-2019", "windows-latest",
+        "ubuntu-latest-64-cores", "ubuntu-latest-32-cores",
+        "ubuntu-latest-16-cores", "ubuntu-latest-8-cores",
+        "ubuntu-latest-4-cores",
+        "ubuntu-22.04-arm", "ubuntu-latest-arm",
+        "ubuntu-22.04", "ubuntu-20.04", "ubuntu-latest",
+    ]
+
+    labels_lower = [l.lower() for l in labels]
+
+    for runner in runner_keywords:
+        if runner in labels_lower:
+            return runner
+
+    # Default to ubuntu-latest if self-hosted or unknown
+    return "ubuntu-latest"
+
+
+def _update_workflow_run_cost(db, org_id, run_id) -> None:
+    """Update workflow run total cost from its jobs."""
+    from sqlalchemy import func
+    from app.models.job import Job
+    from app.models.workflow_run import WorkflowRun
+
+    try:
+        # Sum all job costs for this run
+        result = db.query(func.sum(Job.cost_usd)).filter(
+            Job.org_id == org_id,
+            Job.run_github_id == run_id,
+        ).scalar()
+
+        total_cost = result or Decimal("0")
+
+        # Update workflow run
+        workflow_run = db.query(WorkflowRun).filter(
+            WorkflowRun.org_id == org_id,
+            WorkflowRun.github_run_id == run_id,
+        ).first()
+
+        if workflow_run:
+            workflow_run.cost_usd = total_cost
+            logger.info(f"Updated workflow run {run_id} total cost: ${total_cost}")
+
+    except Exception as e:
+        logger.error(f"Error updating workflow run cost: {e}")

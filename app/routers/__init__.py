@@ -1,2 +1,2 @@
 """CICosts API Routers."""
-from app.routers import health, auth, webhooks
+from app.routers import health, auth, webhooks, dashboard

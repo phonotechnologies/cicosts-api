@@ -14,17 +14,46 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from jose import jwt
+from pydantic import BaseModel
 
 from app.database import get_db
 from app.config import settings, get_github_secrets, get_api_secrets
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.org_membership import OrgMembership
+from app.dependencies import get_current_user, CurrentUser
 
 router = APIRouter()
 
 # In-memory state storage (use Redis in production)
 _oauth_states: dict = {}
+
+
+class UserResponse(BaseModel):
+    """User response schema."""
+    id: str
+    email: str
+    github_login: Optional[str]
+    github_id: Optional[int]
+    github_avatar_url: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrganizationResponse(BaseModel):
+    """Organization response schema."""
+    id: str
+    github_org_slug: str
+    github_org_name: Optional[str]
+    role: str
+
+
+class MeResponse(BaseModel):
+    """Current user with organizations."""
+    user: UserResponse
+    organizations: list[OrganizationResponse]
 
 
 @router.get("/login")
@@ -48,6 +77,15 @@ async def github_login(
         "redirect_uri": redirect_uri or settings.FRONTEND_URL,
         "created_at": datetime.utcnow().isoformat(),
     }
+
+    # Clean up old states (older than 10 minutes)
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    expired = [
+        k for k, v in _oauth_states.items()
+        if datetime.fromisoformat(v["created_at"]) < cutoff
+    ]
+    for k in expired:
+        _oauth_states.pop(k, None)
 
     # GitHub OAuth URL
     github_url = (
@@ -110,7 +148,8 @@ async def github_callback(
         access_token = token_data.get("access_token")
 
         if not access_token:
-            raise HTTPException(status_code=400, detail="No access token received")
+            error = token_data.get("error_description", "No access token received")
+            raise HTTPException(status_code=400, detail=error)
 
         # Fetch user info
         user_response = await client.get(
@@ -140,12 +179,22 @@ async def github_callback(
     # Create or update user
     user = db.query(User).filter(User.github_id == github_user["id"]).first()
 
-    if not user:
+    if user:
+        # Update existing user
+        user.github_login = github_user["login"]
+        user.github_avatar_url = github_user.get("avatar_url")
+        user.github_access_token = access_token  # TODO: encrypt this
+        if github_user.get("email"):
+            user.email = github_user["email"]
+    else:
+        # Create new user
         user = User(
             id=uuid4(),
-            email=github_user.get("email") or f"{github_user['login']}@github.cicosts.dev",
+            email=github_user.get("email") or f"{github_user['login']}@users.noreply.github.com",
             github_id=github_user["id"],
             github_login=github_user["login"],
+            github_avatar_url=github_user.get("avatar_url"),
+            github_access_token=access_token,  # TODO: encrypt this
         )
         db.add(user)
         db.flush()
@@ -177,7 +226,7 @@ async def github_callback(
             membership = OrgMembership(
                 user_id=user.id,
                 org_id=org.id,
-                role="owner",  # First user is owner
+                role="member",
             )
             db.add(membership)
 
@@ -188,28 +237,98 @@ async def github_callback(
         "user_id": str(user.id),
         "email": user.email,
         "github_login": user.github_login,
+        "github_id": user.github_id,
         "exp": datetime.utcnow() + timedelta(days=7),
+        "iat": datetime.utcnow(),
     }
 
     token = jwt.encode(token_payload, jwt_secret, algorithm="HS256")
 
     # Redirect to frontend with token
+    # Use fragment (#) for better security (token not sent to server in subsequent requests)
     return RedirectResponse(
-        url=f"{redirect_uri}?token={token}"
+        url=f"{redirect_uri}/auth/callback#token={token}"
     )
 
 
-@router.get("/me")
-async def get_current_user(
-    # TODO: Add JWT validation dependency
+@router.get("/me", response_model=MeResponse)
+async def get_me(
+    current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get current user info."""
-    # Placeholder - will implement JWT validation
-    return {"message": "Implement JWT validation"}
+    """Get current user info with organizations."""
+    user = db.query(User).filter(
+        User.id == current_user.user_id,
+        User.is_deleted == False,
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get user's organizations with roles
+    memberships = db.query(OrgMembership, Organization).join(
+        Organization, OrgMembership.org_id == Organization.id
+    ).filter(
+        OrgMembership.user_id == user.id,
+    ).all()
+
+    organizations = [
+        OrganizationResponse(
+            id=str(org.id),
+            github_org_slug=org.github_org_slug,
+            github_org_name=org.github_org_name,
+            role=membership.role,
+        )
+        for membership, org in memberships
+    ]
+
+    return MeResponse(
+        user=UserResponse(
+            id=str(user.id),
+            email=user.email,
+            github_login=user.github_login,
+            github_id=user.github_id,
+            github_avatar_url=user.github_avatar_url,
+            created_at=user.created_at,
+        ),
+        organizations=organizations,
+    )
 
 
 @router.post("/logout")
 async def logout():
-    """Logout user (client-side token removal)."""
+    """
+    Logout user.
+
+    Note: JWT tokens are stateless, so logout is handled client-side
+    by removing the token. This endpoint exists for API consistency.
+    """
     return {"message": "Logout successful"}
+
+
+@router.post("/refresh")
+async def refresh_token(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Refresh JWT token.
+
+    Returns a new token with extended expiration.
+    """
+    api_secrets = get_api_secrets()
+    jwt_secret = api_secrets.get("jwt_secret", "changeme")
+
+    # Generate new token
+    token_payload = {
+        "user_id": str(current_user.user_id),
+        "email": current_user.email,
+        "github_login": current_user.github_login,
+        "github_id": current_user.github_id,
+        "exp": datetime.utcnow() + timedelta(days=7),
+        "iat": datetime.utcnow(),
+    }
+
+    token = jwt.encode(token_payload, jwt_secret, algorithm="HS256")
+
+    return {"token": token}

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import health, auth, webhooks
+from app.routers import health, auth, webhooks, dashboard
 
 
 @asynccontextmanager
@@ -31,11 +31,14 @@ app = FastAPI(
 # CORS configuration
 origins = [
     "http://localhost:3000",
+    "http://localhost:3001",
     "https://cicosts.dev",
     "https://www.cicosts.dev",
+    "https://app.cicosts.dev",
+    "https://dev.cicosts.dev",
 ]
 
-if settings.FRONTEND_URL:
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
     origins.append(settings.FRONTEND_URL)
 
 app.add_middleware(
@@ -50,6 +53,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["Health"])
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["Webhooks"])
+app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 
 
 @app.get("/")
