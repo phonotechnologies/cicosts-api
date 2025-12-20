@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Redis (optional)
     UPSTASH_REDIS_URL: str = ""
 
+    # AWS SES Email
+    SES_FROM_EMAIL: str = "noreply@cicosts.dev"
+    SES_REPLY_TO: str = "support@cicosts.dev"
+    SES_REGION: str = "us-east-1"
+    SES_QUEUE_URL: str = ""  # SQS queue URL for async email sending
+
     class Config:
         env_file = ".env"
         case_sensitive = True
