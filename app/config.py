@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Secrets (loaded from AWS Secrets Manager)
     SECRETS_GITHUB_ARN: str = ""
     SECRETS_API_ARN: str = ""
+    SECRETS_DATABASE_ARN: str = ""
 
     # URLs
     FRONTEND_URL: str = "http://localhost:3000"
@@ -94,3 +95,8 @@ def get_github_secrets() -> dict:
 def get_api_secrets() -> dict:
     """Get API secrets (Stripe, Resend, JWT, etc.)."""
     return get_secret(settings.SECRETS_API_ARN)
+
+
+def get_database_secrets() -> dict:
+    """Get database secrets (DATABASE_URL)."""
+    return get_secret(settings.SECRETS_DATABASE_ARN)

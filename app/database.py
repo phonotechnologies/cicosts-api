@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import NullPool
 
-from app.config import settings
+from app.config import settings, get_database_secrets
 
 
 # Lazy engine creation to handle missing DATABASE_URL at startup
@@ -15,14 +15,27 @@ _engine = None
 _SessionLocal = None
 
 
+def get_database_url() -> str:
+    """Get DATABASE_URL from env or Secrets Manager."""
+    if settings.DATABASE_URL:
+        return settings.DATABASE_URL
+
+    # Fetch from Secrets Manager
+    db_secrets = get_database_secrets()
+    database_url = db_secrets.get("database_url", "")
+
+    if not database_url:
+        raise ValueError("DATABASE_URL is not configured")
+
+    return database_url
+
+
 def get_engine():
     """Get or create the database engine."""
     global _engine
     if _engine is None:
-        if not settings.DATABASE_URL:
-            raise ValueError("DATABASE_URL is not configured")
         _engine = create_engine(
-            settings.DATABASE_URL,
+            get_database_url(),
             poolclass=NullPool,  # Lambda creates new connections each invocation
             echo=settings.ENVIRONMENT == "development",
         )
