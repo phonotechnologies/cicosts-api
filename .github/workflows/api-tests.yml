@@ -32,10 +32,9 @@ jobs:
 
       - name: Run tests
         env:
-          # Test environment variables
           ENVIRONMENT: test
           JWT_SECRET: test-jwt-secret-for-ci
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: "sqlite:///:memory:"
         run: |
           python -m pytest tests/ -v --tb=short --cov=app --cov-report=xml --cov-report=term-missing
 
