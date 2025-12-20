@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
 from jose import jwt
 
 from app.main import app
@@ -32,12 +33,13 @@ from app.models.alert_trigger import AlertTrigger
 from app.models.github_installation import GitHubInstallation
 
 
-# Test database setup
+# Test database setup - use StaticPool to maintain single connection for SQLite :memory:
 SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///:memory:"
 
 test_engine = create_engine(
     SQLALCHEMY_TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,  # Ensures same connection is reused for all operations
 )
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
@@ -306,10 +308,12 @@ class WorkflowRunFactory:
         billable_ms: int = 60000,
         cost_usd: Optional[Decimal] = None,
         created_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
     ) -> WorkflowRun:
         """Create a test workflow run."""
         cls._counter += 1
 
+        now = created_at or datetime.utcnow()
         run = WorkflowRun(
             org_id=org_id,
             github_run_id=github_run_id or (30000 + cls._counter),
@@ -322,8 +326,9 @@ class WorkflowRunFactory:
             triggered_by=triggered_by,
             billable_ms=billable_ms,
             cost_usd=cost_usd or Decimal("0.0080"),
-            created_at=created_at or datetime.utcnow(),
+            created_at=now,
             updated_at=datetime.utcnow(),
+            completed_at=completed_at or now,  # Default to created_at if not specified
         )
         db.add(run)
         return run

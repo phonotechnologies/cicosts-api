@@ -5,7 +5,7 @@ Tests cover:
 - GET /api/v1/alerts (list alerts)
 - POST /api/v1/alerts (create alert)
 - GET /api/v1/alerts/{id} (get alert)
-- PATCH /api/v1/alerts/{id} (update alert)
+- PUT /api/v1/alerts/{id} (update alert)
 - DELETE /api/v1/alerts/{id} (delete alert)
 - GET /api/v1/alerts/{id}/triggers (get alert triggers)
 - POST /api/v1/alerts/{id}/check (manually check alert)
@@ -103,7 +103,7 @@ class TestCreateAlert:
             }
         )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 201
         data = response.json()
         assert data["name"] == "Daily Cost Alert"
         assert data["alert_type"] == "cost_threshold"
@@ -128,7 +128,7 @@ class TestCreateAlert:
             }
         )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 201
         data = response.json()
         assert data["alert_type"] == "budget_limit"
         assert data["period"] == "monthly"
@@ -150,7 +150,7 @@ class TestCreateAlert:
             }
         )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 201
         data = response.json()
         assert data["notify_slack"] is True
         assert data["slack_webhook_url"] is not None
@@ -162,7 +162,7 @@ class TestCreateAlert:
         response = client.post(
             f"/api/v1/alerts?org_id={org.id}",
             json={
-                # Missing name, alert_type, etc.
+                # Missing name, threshold_amount
             }
         )
 
@@ -327,7 +327,7 @@ class TestUpdateAlert:
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "New Name"
-        assert data["threshold_amount"] == 150.0
+        assert float(data["threshold_amount"]) == 150.0
         assert data["period"] == "weekly"
         assert data["notify_email"] is False
 
@@ -457,13 +457,17 @@ class TestCheckAlert:
         """Test checking alert that doesn't trigger."""
         client, user, org = authenticated_client_with_org
 
+        now = datetime.utcnow()
         alert = AlertFactory.create(
             db, org_id=org.id,
             threshold_amount=Decimal("100.00"),
             period=AlertPeriod.DAILY
         )
         # Create workflow run with low cost
-        WorkflowRunFactory.create(db, org_id=org.id, cost_usd=Decimal("10.00"))
+        WorkflowRunFactory.create(
+            db, org_id=org.id, cost_usd=Decimal("10.00"),
+            created_at=now, completed_at=now
+        )
         db.commit()
 
         response = client.post(f"/api/v1/alerts/{alert.id}/check")
@@ -476,23 +480,30 @@ class TestCheckAlert:
         """Test checking alert that should trigger."""
         client, user, org = authenticated_client_with_org
 
+        now = datetime.utcnow()
         alert = AlertFactory.create(
             db, org_id=org.id,
             threshold_amount=Decimal("50.00"),
             period=AlertPeriod.DAILY
         )
         # Create workflow runs that exceed threshold
-        WorkflowRunFactory.create(db, org_id=org.id, cost_usd=Decimal("30.00"))
-        WorkflowRunFactory.create(db, org_id=org.id, cost_usd=Decimal("30.00"))
+        WorkflowRunFactory.create(
+            db, org_id=org.id, cost_usd=Decimal("30.00"),
+            created_at=now, completed_at=now
+        )
+        WorkflowRunFactory.create(
+            db, org_id=org.id, cost_usd=Decimal("30.00"),
+            created_at=now, completed_at=now
+        )
         db.commit()
 
         response = client.post(f"/api/v1/alerts/{alert.id}/check")
 
         assert response.status_code == 200
         data = response.json()
-        assert data["triggered"] is True
+        assert data["threshold_exceeded"] is True
         assert data["current_cost"] >= 60.0
-        assert data["threshold"] == 50.0
+        assert float(data["threshold"]) == 50.0
 
     def test_check_alert_disabled(self, authenticated_client_with_org, db):
         """Test checking disabled alert."""
@@ -505,8 +516,8 @@ class TestCheckAlert:
 
         assert response.status_code == 200
         data = response.json()
+        # Disabled alerts return triggered=False
         assert data["triggered"] is False
-        # Disabled alerts should not trigger
 
     def test_check_alert_not_found(self, authenticated_client):
         """Test checking non-existent alert returns 404."""

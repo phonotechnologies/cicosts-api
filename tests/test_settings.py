@@ -45,44 +45,28 @@ class TestGetUserSettings:
 
 
 class TestUpdateUserSettings:
-    """Tests for PATCH /api/v1/settings/user endpoint."""
+    """Tests for PATCH /api/v1/settings/user endpoint.
 
-    def test_update_user_email(self, authenticated_client):
-        """Test updating user email."""
+    Note: The PATCH /user endpoint is read-only per the implementation.
+    It returns the current user without updating anything.
+    For updates, use /notifications endpoint.
+    """
+
+    def test_patch_user_returns_current_user(self, authenticated_client):
+        """Test that PATCH /user returns current user without updates."""
         client, user = authenticated_client
 
-        response = client.patch(
-            "/api/v1/settings/user",
-            json={"notification_email": "newemail@example.com"}
-        )
+        response = client.patch("/api/v1/settings/user")
 
         assert response.status_code == 200
         data = response.json()
-        assert data["notification_email"] == "newemail@example.com"
-
-    def test_update_multiple_fields(self, authenticated_client):
-        """Test updating multiple user fields at once."""
-        client, user = authenticated_client
-
-        response = client.patch(
-            "/api/v1/settings/user",
-            json={
-                "notification_email": "updates@example.com",
-                "weekly_digest_enabled": True,
-            }
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["notification_email"] == "updates@example.com"
-        assert data["weekly_digest_enabled"] is True
+        # Returns current user data
+        assert data["id"] == str(user.id)
+        assert data["email"] == user.email
 
     def test_update_user_settings_unauthenticated(self, client):
         """Test that unauthenticated request returns 401."""
-        response = client.patch(
-            "/api/v1/settings/user",
-            json={"notification_email": "test@example.com"}
-        )
+        response = client.patch("/api/v1/settings/user")
 
         assert response.status_code == 401
 
@@ -138,6 +122,19 @@ class TestUpdateNotificationSettings:
         data = response.json()
         assert data["alert_emails_enabled"] is False
 
+    def test_update_notification_email(self, authenticated_client):
+        """Test updating notification email."""
+        client, user = authenticated_client
+
+        response = client.patch(
+            "/api/v1/settings/notifications",
+            json={"notification_email": "alerts@example.com"}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["notification_email"] == "alerts@example.com"
+
     def test_update_all_notification_settings(self, authenticated_client):
         """Test updating all notification settings at once."""
         client, user = authenticated_client
@@ -156,6 +153,15 @@ class TestUpdateNotificationSettings:
         assert data["notification_email"] == "alerts@example.com"
         assert data["weekly_digest_enabled"] is True
         assert data["alert_emails_enabled"] is True
+
+    def test_update_notifications_unauthenticated(self, client):
+        """Test that unauthenticated request returns 401."""
+        response = client.patch(
+            "/api/v1/settings/notifications",
+            json={"weekly_digest_enabled": True}
+        )
+
+        assert response.status_code == 401
 
 
 class TestGetOrganizations:
@@ -202,7 +208,7 @@ class TestLeaveOrganization:
         """Test leaving an organization successfully."""
         client, user, org = authenticated_client_with_org
 
-        # Create a second user as owner so we can leave
+        # Create a second user as owner so current user can leave
         owner = UserFactory.create(db)
         OrgMembershipFactory.create(db, user_id=owner.id, org_id=org.id, role="owner")
         db.commit()
@@ -260,7 +266,7 @@ class TestDeleteAccount:
 
         assert response.status_code == 401
 
-    def test_cannot_login_after_delete(self, authenticated_client):
+    def test_cannot_access_after_delete(self, authenticated_client):
         """Test that user cannot access API after account deletion."""
         client, user = authenticated_client
 

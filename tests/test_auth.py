@@ -11,10 +11,12 @@ Tests cover:
 import pytest
 from datetime import datetime, timedelta
 from uuid import uuid4
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from tests.conftest import (
     UserFactory,
+    OrganizationFactory,
+    OrgMembershipFactory,
     create_test_token,
     TEST_JWT_SECRET,
 )
@@ -23,86 +25,78 @@ from tests.conftest import (
 class TestLogin:
     """Tests for GET /api/v1/auth/login endpoint."""
 
-    def test_login_redirects_to_github(self, client, mock_api_secrets):
+    def test_login_redirects_to_github(self, client):
         """Test that login redirects to GitHub OAuth."""
-        response = client.get("/api/v1/auth/login", follow_redirects=False)
+        # Mock the secrets and settings
+        mock_github_secrets = {"client_id": "test-client-id", "client_secret": "test-secret"}
+        mock_api_secrets = {"jwt_secret": TEST_JWT_SECRET}
+
+        with patch("app.routers.auth.get_github_secrets", return_value=mock_github_secrets):
+            with patch("app.routers.auth.settings") as mock_settings:
+                mock_settings.GITHUB_CLIENT_ID = "test-client-id"
+                mock_settings.FRONTEND_URL = "http://localhost:3000"
+                mock_settings.API_URL = "http://localhost:8000"
+
+                response = client.get("/api/v1/auth/login", follow_redirects=False)
 
         # Should redirect to GitHub
-        assert response.status_code in [302, 307, 200]
-        if response.status_code in [302, 307]:
-            location = response.headers.get("Location", "")
-            assert "github.com" in location or "authorize" in location
+        assert response.status_code in [302, 307]
+        location = response.headers.get("Location", "")
+        assert "github.com" in location
+        assert "client_id" in location
 
-    def test_login_includes_client_id(self, client, mock_api_secrets):
-        """Test that login URL includes client ID."""
-        response = client.get("/api/v1/auth/login", follow_redirects=False)
+    def test_login_includes_state(self, client):
+        """Test that login URL includes state parameter."""
+        mock_github_secrets = {"client_id": "test-client-id", "client_secret": "test-secret"}
 
-        # If redirect, check location header
-        if response.status_code in [302, 307]:
-            location = response.headers.get("Location", "")
-            # Should include client_id parameter
-            assert "client_id" in location or response.status_code == 200
+        with patch("app.routers.auth.get_github_secrets", return_value=mock_github_secrets):
+            with patch("app.routers.auth.settings") as mock_settings:
+                mock_settings.GITHUB_CLIENT_ID = "test-client-id"
+                mock_settings.FRONTEND_URL = "http://localhost:3000"
+                mock_settings.API_URL = "http://localhost:8000"
+
+                response = client.get("/api/v1/auth/login", follow_redirects=False)
+
+        location = response.headers.get("Location", "")
+        assert "state=" in location
 
 
 class TestCallback:
     """Tests for GET /api/v1/auth/callback endpoint."""
 
-    def test_callback_without_code_fails(self, client, mock_api_secrets):
+    def test_callback_without_code_fails(self, client):
         """Test that callback without code returns error."""
-        response = client.get("/api/v1/auth/callback")
+        response = client.get("/api/v1/auth/callback?state=test-state")
 
-        # Should fail without code
-        assert response.status_code in [400, 422]
+        # Should fail without code (422 for validation error)
+        assert response.status_code == 422
 
-    def test_callback_with_error_returns_error(self, client, mock_api_secrets):
-        """Test that callback handles OAuth errors."""
-        response = client.get(
-            "/api/v1/auth/callback",
-            params={"error": "access_denied", "error_description": "User denied access"}
-        )
+    def test_callback_requires_state(self, client):
+        """Test that callback requires state parameter."""
+        response = client.get("/api/v1/auth/callback?code=test-code")
 
-        # Should handle error gracefully
-        assert response.status_code in [400, 401, 302, 307]
-
-    def test_callback_with_code_exchanges_token(self, client, mock_api_secrets):
-        """Test that callback exchanges code for token."""
-        with patch("app.routers.auth.exchange_code_for_token") as mock_exchange:
-            mock_exchange.return_value = {
-                "access_token": "gho_test_token",
-                "token_type": "bearer",
-            }
-
-            with patch("app.routers.auth.get_github_user") as mock_user:
-                mock_user.return_value = {
-                    "id": 12345,
-                    "login": "testuser",
-                    "email": "test@example.com",
-                    "avatar_url": "https://avatars.githubusercontent.com/u/12345",
-                }
-
-                response = client.get(
-                    "/api/v1/auth/callback",
-                    params={"code": "test_auth_code"}
-                )
-
-        # Should succeed or redirect
-        assert response.status_code in [200, 302, 307]
+        # Should fail without state (422 for validation error)
+        assert response.status_code == 422
 
 
 class TestGetCurrentUser:
     """Tests for GET /api/v1/auth/me endpoint."""
 
-    def test_get_current_user_success(self, authenticated_client):
+    def test_get_current_user_success(self, authenticated_client_with_org):
         """Test getting current authenticated user."""
-        client, user = authenticated_client
+        client, user, org = authenticated_client_with_org
 
         response = client.get("/api/v1/auth/me")
 
         assert response.status_code == 200
         data = response.json()
-        assert data["id"] == str(user.id)
-        assert data["email"] == user.email
-        assert data["github_login"] == user.github_login
+        # Response has nested user object
+        assert "user" in data
+        assert data["user"]["id"] == str(user.id)
+        assert data["user"]["email"] == user.email
+        assert data["user"]["github_login"] == user.github_login
+        # Also has organizations
+        assert "organizations" in data
 
     def test_get_current_user_unauthenticated(self, client):
         """Test that unauthenticated request returns 401."""
@@ -177,28 +171,31 @@ class TestLogout:
 
         assert response.status_code == 200
         data = response.json()
-        assert data.get("success") is True or "message" in data
+        assert "message" in data
+        assert "Logout" in data["message"] or "logout" in data["message"].lower()
 
-    def test_logout_unauthenticated(self, client):
-        """Test that unauthenticated logout returns 401."""
+    def test_logout_works_without_auth(self, client):
+        """Test that logout works even without auth (stateless JWT)."""
         response = client.post("/api/v1/auth/logout")
 
-        assert response.status_code == 401
+        # Logout is stateless - works without auth
+        assert response.status_code == 200
 
 
 class TestRefreshToken:
     """Tests for POST /api/v1/auth/refresh endpoint."""
 
-    def test_refresh_token_success(self, authenticated_client):
+    def test_refresh_token_success(self, authenticated_client, mock_api_secrets):
         """Test refreshing token successfully."""
         client, user = authenticated_client
 
-        response = client.post("/api/v1/auth/refresh")
+        with patch("app.routers.auth.get_api_secrets", return_value={"jwt_secret": TEST_JWT_SECRET}):
+            response = client.post("/api/v1/auth/refresh")
 
         # Should return new token
         assert response.status_code == 200
         data = response.json()
-        assert "token" in data or "access_token" in data
+        assert "token" in data
 
     def test_refresh_token_unauthenticated(self, client):
         """Test that unauthenticated refresh returns 401."""

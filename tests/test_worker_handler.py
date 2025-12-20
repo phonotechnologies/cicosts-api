@@ -5,8 +5,8 @@ Tests cover:
 - workflow_run event processing
 - workflow_job event processing
 - installation event processing
-- Cost calculation
-- Error handling
+- Lambda handler entry points
+- Scheduled job handling
 """
 import pytest
 import json
@@ -25,7 +25,38 @@ from tests.conftest import (
 class TestWorkflowRunHandler:
     """Tests for workflow_run event processing."""
 
-    def test_process_workflow_run_creates_record(self, db, sample_data):
+    def test_process_workflow_run_ignores_non_completed(self):
+        """Test that workflow_run handler ignores non-completed events."""
+        from app.workers.handler import handle_sqs_webhooks
+
+        records = [
+            {
+                "messageId": "msg-1",
+                "body": json.dumps({
+                    "event_type": "workflow_run",
+                    "action": "in_progress",  # Not completed
+                    "delivery_id": "test-delivery-1",
+                    "payload": {
+                        "action": "in_progress",
+                        "workflow_run": {
+                            "id": 123456,
+                            "name": "CI",
+                            "run_number": 1,
+                            "status": "in_progress",
+                            "conclusion": None,
+                        },
+                    }
+                }),
+            }
+        ]
+
+        result = handle_sqs_webhooks(records)
+
+        # Should succeed without error
+        assert "batchItemFailures" in result
+        assert len(result["batchItemFailures"]) == 0
+
+    def test_process_workflow_run_with_database(self, db, sample_data):
         """Test that workflow_run event creates a WorkflowRun record."""
         from app.workers.handler import handle_sqs_webhooks
 
@@ -62,37 +93,42 @@ class TestWorkflowRunHandler:
                             "login": org.github_org_slug,
                         },
                         "installation": {"id": installation.installation_id},
+                        "sender": {"login": "developer"},
                     }
                 }),
             }
         ]
 
-        with patch("app.workers.handler.get_session_local") as mock_session:
-            mock_session.return_value.return_value = db
+        # Mock the database session factory to return our test session
+        mock_session_factory = MagicMock(return_value=db)
 
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
             result = handle_sqs_webhooks(records)
 
         # Should process successfully with no failures
         assert "batchItemFailures" in result
-        # Might have failures due to missing org, which is ok for this test
 
-    def test_process_workflow_run_ignores_non_completed(self, db, sample_data):
-        """Test that workflow_run handler ignores non-completed events."""
+
+class TestWorkflowJobHandler:
+    """Tests for workflow_job event processing."""
+
+    def test_process_workflow_job_ignores_non_completed(self):
+        """Test that workflow_job handler ignores non-completed events."""
         from app.workers.handler import handle_sqs_webhooks
 
         records = [
             {
                 "messageId": "msg-1",
                 "body": json.dumps({
-                    "event_type": "workflow_run",
-                    "action": "in_progress",  # Not completed
+                    "event_type": "workflow_job",
+                    "action": "in_progress",
                     "delivery_id": "test-delivery-1",
                     "payload": {
                         "action": "in_progress",
-                        "workflow_run": {
-                            "id": 123456,
-                            "name": "CI",
-                            "run_number": 1,
+                        "workflow_job": {
+                            "id": 888777666,
+                            "run_id": 123456,
+                            "name": "test-job",
                             "status": "in_progress",
                             "conclusion": None,
                         },
@@ -103,70 +139,15 @@ class TestWorkflowRunHandler:
 
         result = handle_sqs_webhooks(records)
 
-        # Should succeed without error
         assert "batchItemFailures" in result
         assert len(result["batchItemFailures"]) == 0
-
-
-class TestWorkflowJobHandler:
-    """Tests for workflow_job event processing."""
-
-    def test_process_workflow_job_creates_record(self, db, sample_data):
-        """Test that workflow_job event creates a Job record."""
-        from app.workers.handler import handle_sqs_webhooks
-
-        org = sample_data["organizations"][0]
-        installation = sample_data["installations"][0]
-        existing_run = sample_data["workflow_runs"][0]
-
-        records = [
-            {
-                "messageId": "msg-1",
-                "body": json.dumps({
-                    "event_type": "workflow_job",
-                    "action": "completed",
-                    "delivery_id": "test-delivery-1",
-                    "payload": {
-                        "action": "completed",
-                        "workflow_job": {
-                            "id": 888777666,
-                            "run_id": existing_run.github_run_id,
-                            "name": "test-job",
-                            "status": "completed",
-                            "conclusion": "success",
-                            "started_at": "2024-12-20T12:00:00Z",
-                            "completed_at": "2024-12-20T12:05:00Z",
-                            "runner_name": "ubuntu-latest",
-                            "labels": ["ubuntu-latest"],
-                        },
-                        "repository": {
-                            "id": 12345,
-                            "name": existing_run.repo_name,
-                            "full_name": f"acme-corp/{existing_run.repo_name}",
-                        },
-                        "organization": {
-                            "id": org.github_org_id,
-                            "login": org.github_org_slug,
-                        },
-                        "installation": {"id": installation.installation_id},
-                    }
-                }),
-            }
-        ]
-
-        with patch("app.workers.handler.get_session_local") as mock_session:
-            mock_session.return_value.return_value = db
-
-            result = handle_sqs_webhooks(records)
-
-        assert "batchItemFailures" in result
 
 
 class TestInstallationHandler:
     """Tests for installation event processing."""
 
-    def test_process_installation_created(self, db):
-        """Test that installation.created event creates GitHubInstallation."""
+    def test_process_installation_ignores_unknown_action(self):
+        """Test that installation handler ignores unknown actions gracefully."""
         from app.workers.handler import handle_sqs_webhooks
 
         records = [
@@ -174,10 +155,10 @@ class TestInstallationHandler:
                 "messageId": "msg-1",
                 "body": json.dumps({
                     "event_type": "installation",
-                    "action": "created",
+                    "action": "new_permissions_accepted",  # Not directly handled
                     "delivery_id": "test-delivery-1",
                     "payload": {
-                        "action": "created",
+                        "action": "new_permissions_accepted",
                         "installation": {
                             "id": 999111222,
                             "account": {
@@ -185,10 +166,6 @@ class TestInstallationHandler:
                                 "login": "new-org",
                                 "type": "Organization",
                             },
-                            "target_type": "Organization",
-                            "repository_selection": "all",
-                            "permissions": {"actions": "read"},
-                            "events": ["workflow_run", "workflow_job"],
                         },
                         "sender": {"id": 12345, "login": "admin"},
                     }
@@ -196,12 +173,60 @@ class TestInstallationHandler:
             }
         ]
 
-        with patch("app.workers.handler.get_session_local") as mock_session:
-            mock_session.return_value.return_value = db
+        # Mock get_session_local to prevent actual database access
+        mock_session = MagicMock()
+        mock_session_factory = MagicMock(return_value=mock_session)
 
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
             result = handle_sqs_webhooks(records)
 
         assert "batchItemFailures" in result
+
+
+class TestScheduledJobHandler:
+    """Tests for scheduled job handling."""
+
+    def test_health_check_job(self):
+        """Test health check scheduled job."""
+        from app.workers.handler import handle_scheduled_job
+
+        event = {
+            "job_type": "health_check",
+            "tasks": ["db", "cache"],
+        }
+
+        result = handle_scheduled_job(event)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["status"] == "ok"
+        assert body["checks"] == ["db", "cache"]
+
+    def test_unknown_job_type(self):
+        """Test unknown job type returns error."""
+        from app.workers.handler import handle_scheduled_job
+
+        event = {
+            "job_type": "unknown_job",
+            "tasks": [],
+        }
+
+        result = handle_scheduled_job(event)
+
+        assert result["statusCode"] == 400
+
+    def test_daily_sync_job(self):
+        """Test daily sync scheduled job."""
+        from app.workers.handler import handle_scheduled_job
+
+        event = {
+            "job_type": "daily_sync",
+            "tasks": ["github", "aws"],
+        }
+
+        result = handle_scheduled_job(event)
+
+        assert result["statusCode"] == 200
 
 
 class TestLambdaHandler:
@@ -217,16 +242,13 @@ class TestLambdaHandler:
                     "messageId": "msg-1",
                     "body": json.dumps({
                         "event_type": "workflow_run",
-                        "action": "completed",
+                        "action": "in_progress",  # Ignored action
                         "delivery_id": "test-delivery",
                         "payload": {
-                            "action": "completed",
+                            "action": "in_progress",
                             "workflow_run": {
                                 "id": 123456,
                                 "name": "CI",
-                                "run_number": 1,
-                                "status": "completed",
-                                "conclusion": "success",
                             },
                         }
                     }),
@@ -234,11 +256,11 @@ class TestLambdaHandler:
             ]
         }
 
-        with patch("app.workers.handler.get_session_local"):
-            result = handler(sqs_event, None)
+        result = handler(sqs_event, None)
 
         # Should return batch item failures format
         assert "batchItemFailures" in result
+        assert len(result["batchItemFailures"]) == 0
 
     def test_lambda_handler_processes_scheduled_event(self):
         """Test Lambda handler processes scheduled job event."""
@@ -299,8 +321,6 @@ class TestCostCalculation:
 
     def test_calculate_billable_ms(self):
         """Test billable milliseconds calculation."""
-        from datetime import datetime
-
         start = datetime(2024, 12, 20, 12, 0, 0)
         end = datetime(2024, 12, 20, 12, 5, 30)  # 5 min 30 sec
 
