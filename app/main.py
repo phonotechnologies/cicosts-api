@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
-from app.routers import health, auth, webhooks, dashboard, alerts
+from app.config import settings as app_settings
+from app.routers import health, auth, webhooks, dashboard, alerts, settings
 
 
 @asynccontextmanager
@@ -23,8 +23,8 @@ app = FastAPI(
     title="CICosts API",
     description="Track and optimize your CI/CD costs",
     version="0.1.0",
-    docs_url="/docs" if settings.ENVIRONMENT != "prod" else None,
-    redoc_url="/redoc" if settings.ENVIRONMENT != "prod" else None,
+    docs_url="/docs" if app_settings.ENVIRONMENT != "prod" else None,
+    redoc_url="/redoc" if app_settings.ENVIRONMENT != "prod" else None,
     lifespan=lifespan,
 )
 
@@ -38,8 +38,8 @@ origins = [
     "https://dev.cicosts.dev",
 ]
 
-if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
-    origins.append(settings.FRONTEND_URL)
+if app_settings.FRONTEND_URL and app_settings.FRONTEND_URL not in origins:
+    origins.append(app_settings.FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +55,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["Webhooks"])
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
+app.include_router(settings.router, prefix="/api/v1/settings", tags=["Settings"])
 
 
 @app.get("/")
@@ -63,5 +64,5 @@ async def root():
     return {
         "name": "CICosts API",
         "version": "0.1.0",
-        "docs": "/docs" if settings.ENVIRONMENT != "prod" else None,
+        "docs": "/docs" if app_settings.ENVIRONMENT != "prod" else None,
     }

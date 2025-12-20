@@ -26,6 +26,11 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Notification settings
+    notification_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    weekly_digest_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    alert_emails_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
