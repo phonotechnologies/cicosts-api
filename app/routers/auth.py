@@ -29,6 +29,33 @@ router = APIRouter()
 _oauth_states: dict = {}
 
 
+async def _get_github_org_role(access_token: str, org_login: str, username: str) -> str:
+    """
+    Get user's role in a GitHub organization.
+
+    Queries GitHub's membership API to determine if user is admin/owner or member.
+    Returns "owner" for org admins, "member" for regular members.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.github.com/orgs/{org_login}/memberships/{username}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+
+        if response.status_code == 200:
+            membership = response.json()
+            # GitHub returns "admin" for org owners/admins, "member" for regular members
+            # We map "admin" to "owner" to match our database terminology
+            if membership.get("role") == "admin":
+                return "owner"
+
+        # Default to member if we can't determine the role
+        return "member"
+
+
 class UserResponse(BaseModel):
     """User response schema."""
     id: str
@@ -225,10 +252,14 @@ async def github_callback(
         ).first()
 
         if not membership:
+            # Check user's role in the GitHub org
+            user_role = await _get_github_org_role(
+                access_token, gh_org["login"], github_user["login"]
+            )
             membership = OrgMembership(
                 user_id=user.id,
                 org_id=org.id,
-                role="member",
+                role=user_role,
             )
             db.add(membership)
 
