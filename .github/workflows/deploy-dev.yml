@@ -1,0 +1,71 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::***REMOVED***:role/cicosts-prod-github-actions-api
+  LAMBDA_FUNCTION_API: cicosts-dev-api
+  LAMBDA_FUNCTION_WORKERS: cicosts-dev-workers
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies to package directory
+        run: |
+          pip install -r requirements.txt -t package-py311/ --upgrade
+          cp -r app package-py311/
+          cp handler.py package-py311/
+          cp workers.py package-py311/
+
+      - name: Create Lambda deployment package
+        run: |
+          cd package-py311
+          zip -r ../lambda.zip . -x "*.pyc" -x "__pycache__/*" -x "*.git*" -x "tests/*"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy API Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_API }} \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+      - name: Deploy Workers Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_WORKERS }} \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+      - name: Wait for Lambda updates
+        run: |
+          aws lambda wait function-updated --function-name ${{ env.LAMBDA_FUNCTION_API }}
+          aws lambda wait function-updated --function-name ${{ env.LAMBDA_FUNCTION_WORKERS }}
+
+      - name: Verify deployment
+        run: |
+          sleep 5
+          curl -s https://dev-api.cicosts.dev/health | jq .
