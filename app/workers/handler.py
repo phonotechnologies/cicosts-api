@@ -283,19 +283,18 @@ def _process_workflow_job(payload: dict) -> None:
 
         if not existing_run:
             # Create a minimal workflow_run record so the job can reference it
+            now = datetime.utcnow()
             workflow_run = WorkflowRun(
-                id=uuid4(),
-                github_run_id=run_id,
                 org_id=org.id,
+                github_run_id=run_id,
                 repo_name=repository.get("full_name", repository.get("name", "")),
                 workflow_name=job.get("workflow_name", "Unknown"),
-                status="in_progress",  # Will be updated when workflow_run event arrives
+                run_number=0,  # Will be updated when workflow_run event arrives
+                status="in_progress",
                 conclusion=None,
                 event="unknown",
-                actor=None,
-                branch=None,
-                created_at=datetime.utcnow(),
-                total_cost_usd=0,
+                created_at=now,
+                updated_at=now,
             )
             db.add(workflow_run)
             db.flush()
