@@ -6,10 +6,20 @@ Main entry point for the API.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import sentry_sdk
 
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings as app_settings
+
+# Initialize Sentry for error tracking (prod/staging only)
+if app_settings.ENVIRONMENT in ("prod", "staging"):
+    sentry_sdk.init(
+        dsn="https://67302d193483c4c29fbc32428975b422@o4510575255945216.ingest.us.sentry.io/4510575259811840",
+        environment=app_settings.ENVIRONMENT,
+        send_default_pii=True,
+        traces_sample_rate=0.1,  # 10% of requests for performance monitoring
+    )
 from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing, limits
 from app.middleware.rate_limit import (
     RateLimitMiddleware,
