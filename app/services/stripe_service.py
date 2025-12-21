@@ -17,10 +17,8 @@ def _get_stripe_client() -> None:
     """Initialize Stripe with API key."""
     secrets = get_stripe_secrets()
     api_key = secrets.get("secret_key", "")
-    if api_key:
-        print(f"[STRIPE] API key loaded: {api_key[:10]}...{api_key[-4:]}")
-    else:
-        print("[STRIPE ERROR] API key is empty!")
+    if not api_key:
+        logger.error("Stripe API key not configured")
     stripe.api_key = api_key
 
 
@@ -73,18 +71,8 @@ def create_checkout_session(
     else:
         session_params["customer_email"] = customer_email
 
-    print(f"[STRIPE] Creating checkout session: price_id={price_id}, org_id={org_id}")
-    try:
-        session = stripe.checkout.Session.create(**session_params)
-        print(f"[STRIPE] Checkout session created: {session.id}")
-        return session.url
-    except stripe.error.StripeError as e:
-        error_msg = e.user_message if hasattr(e, 'user_message') else str(e)
-        print(f"[STRIPE ERROR] {type(e).__name__}: {error_msg}")
-        raise
-    except Exception as e:
-        print(f"[STRIPE ERROR] Unexpected: {type(e).__name__}: {str(e)}")
-        raise
+    session = stripe.checkout.Session.create(**session_params)
+    return session.url
 
 
 def create_portal_session(stripe_customer_id: str) -> str:

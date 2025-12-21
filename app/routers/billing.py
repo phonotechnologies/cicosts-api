@@ -84,9 +84,6 @@ async def create_checkout(
 
     Returns URL to redirect user to Stripe Checkout.
     """
-    print(f"[BILLING] Checkout request received: org_id={request.org_id}, price_id={request.price_id}")
-    print(f"[BILLING] User: user_id={current_user.user_id}, email={current_user.email}")
-
     # Verify user has access to this org
     membership = db.query(OrgMembership).filter(
         OrgMembership.user_id == current_user.user_id,
@@ -94,34 +91,24 @@ async def create_checkout(
     ).first()
 
     if not membership:
-        print(f"[BILLING ERROR] User {current_user.user_id} is not a member of org {request.org_id}")
         raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-    print(f"[BILLING] Membership found: role={membership.role}")
 
     # Only admins/owners can manage billing
     if membership.role not in ["admin", "owner"]:
-        print(f"[BILLING ERROR] User role {membership.role} cannot manage billing")
         raise HTTPException(status_code=403, detail="Only admins can manage billing")
 
     # Get organization
     org = db.query(Organization).filter(Organization.id == request.org_id).first()
     if not org:
-        print(f"[BILLING ERROR] Organization {request.org_id} not found")
         raise HTTPException(status_code=404, detail="Organization not found")
-
-    print(f"[BILLING] Organization found: {org.github_org_slug}")
 
     # Validate price ID
     valid_prices = stripe_service.get_price_ids()
     valid_price_list = [v for v in valid_prices.values() if v]
-    print(f"[BILLING] Valid prices: {valid_price_list}")
     if request.price_id not in valid_price_list:
-        print(f"[BILLING ERROR] Invalid price ID: {request.price_id}")
         raise HTTPException(status_code=400, detail="Invalid price ID")
 
     try:
-        print(f"[BILLING] Creating checkout: org={org.id}, price={request.price_id}, email={current_user.email}")
         checkout_url = stripe_service.create_checkout_session(
             price_id=request.price_id,
             org_id=org.id,
@@ -129,10 +116,9 @@ async def create_checkout(
             customer_email=current_user.email,
             stripe_customer_id=org.stripe_customer_id,
         )
-        print(f"[BILLING] Checkout created: {checkout_url[:50]}...")
         return CheckoutResponse(checkout_url=checkout_url)
     except Exception as e:
-        print(f"[BILLING ERROR] {type(e).__name__}: {str(e)}")
+        logger.error(f"Checkout failed: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create checkout: {str(e)}")
 
 
@@ -172,6 +158,7 @@ async def create_portal(
         portal_url = stripe_service.create_portal_session(org.stripe_customer_id)
         return PortalResponse(portal_url=portal_url)
     except Exception as e:
+        logger.error(f"Portal creation failed: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create portal: {str(e)}")
 
 
