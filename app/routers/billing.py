@@ -109,7 +109,7 @@ async def create_checkout(
         raise HTTPException(status_code=400, detail="Invalid price ID")
 
     try:
-        logger.info(f"Creating checkout session for org={org.id}, price_id={request.price_id}")
+        print(f"[BILLING] Creating checkout: org={org.id}, price={request.price_id}, email={current_user.email}")
         checkout_url = stripe_service.create_checkout_session(
             price_id=request.price_id,
             org_id=org.id,
@@ -117,10 +117,10 @@ async def create_checkout(
             customer_email=current_user.email,
             stripe_customer_id=org.stripe_customer_id,
         )
-        logger.info(f"Checkout session created successfully: {checkout_url[:50]}...")
+        print(f"[BILLING] Checkout created: {checkout_url[:50]}...")
         return CheckoutResponse(checkout_url=checkout_url)
     except Exception as e:
-        logger.error(f"Checkout failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        print(f"[BILLING ERROR] {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create checkout: {str(e)}")
 
 

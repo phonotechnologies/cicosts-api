@@ -18,9 +18,9 @@ def _get_stripe_client() -> None:
     secrets = get_stripe_secrets()
     api_key = secrets.get("secret_key", "")
     if api_key:
-        logger.info(f"Stripe API key loaded: {api_key[:10]}...{api_key[-4:]}")
+        print(f"[STRIPE] API key loaded: {api_key[:10]}...{api_key[-4:]}")
     else:
-        logger.error("Stripe API key is empty!")
+        print("[STRIPE ERROR] API key is empty!")
     stripe.api_key = api_key
 
 
@@ -73,13 +73,17 @@ def create_checkout_session(
     else:
         session_params["customer_email"] = customer_email
 
-    logger.info(f"Creating Stripe checkout session with params: price_id={price_id}, org_id={org_id}")
+    print(f"[STRIPE] Creating checkout session: price_id={price_id}, org_id={org_id}")
     try:
         session = stripe.checkout.Session.create(**session_params)
-        logger.info(f"Stripe checkout session created: {session.id}")
+        print(f"[STRIPE] Checkout session created: {session.id}")
         return session.url
     except stripe.error.StripeError as e:
-        logger.error(f"Stripe API error: {type(e).__name__}: {e.user_message if hasattr(e, 'user_message') else str(e)}")
+        error_msg = e.user_message if hasattr(e, 'user_message') else str(e)
+        print(f"[STRIPE ERROR] {type(e).__name__}: {error_msg}")
+        raise
+    except Exception as e:
+        print(f"[STRIPE ERROR] Unexpected: {type(e).__name__}: {str(e)}")
         raise
 
 
