@@ -278,12 +278,17 @@ class TestGitHubWebhooks:
 class TestStripeWebhooks:
     """Tests for POST /api/v1/webhooks/stripe endpoint."""
 
-    def test_stripe_webhook_received(self, client):
+    def test_stripe_webhook_received(self, client, db):
         """Test Stripe webhook endpoint exists and receives events."""
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
 
-        # Mock stripe verification to return a valid event
-        with patch("app.services.stripe_service.verify_webhook_signature") as mock_verify:
+        # Create a mock session factory that returns the test db session
+        def mock_get_session_local():
+            return lambda: db
+
+        # Mock stripe verification and database session
+        with patch("app.services.stripe_service.verify_webhook_signature") as mock_verify, \
+             patch("app.database.get_session_local", mock_get_session_local):
             mock_verify.return_value = {
                 "type": "checkout.session.completed",
                 "data": {"object": {}}

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings as app_settings
-from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing
+from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing, limits
 
 # Configure logging for Lambda/CloudWatch
 logging.basicConfig(
@@ -67,6 +67,7 @@ app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboar
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["Settings"])
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
+app.include_router(limits.router, prefix="/api/v1/limits", tags=["Limits"])
 
 
 @app.get("/")

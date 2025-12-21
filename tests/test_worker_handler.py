@@ -316,6 +316,240 @@ class TestLambdaHandler:
         assert result["statusCode"] == 400
 
 
+class TestRepoLimitEnforcement:
+    """Tests for repo limit enforcement in webhook processing."""
+
+    def test_workflow_run_skipped_at_repo_limit(self, db, sample_data):
+        """Test workflow_run is skipped when org is at repo limit."""
+        from app.workers.handler import handle_sqs_webhooks
+        from app.models.workflow_run import WorkflowRun
+
+        org = sample_data["organizations"][0]
+        installation = sample_data["installations"][0]
+
+        # Get initial run count
+        initial_count = db.query(WorkflowRun).filter(
+            WorkflowRun.org_id == org.id
+        ).count()
+
+        records = [
+            {
+                "messageId": "msg-limit-test",
+                "body": json.dumps({
+                    "event_type": "workflow_run",
+                    "action": "completed",
+                    "delivery_id": "test-delivery-limit",
+                    "payload": {
+                        "action": "completed",
+                        "workflow_run": {
+                            "id": 111222333,
+                            "name": "CI",
+                            "run_number": 1,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "event": "push",
+                            "actor": {"login": "developer"},
+                            "created_at": "2024-12-21T12:00:00Z",
+                            "updated_at": "2024-12-21T12:10:00Z",
+                        },
+                        "repository": {
+                            "id": 99999,
+                            "name": "new-repo-at-limit",
+                            "full_name": "acme-corp/new-repo-at-limit",
+                        },
+                        "organization": {
+                            "id": org.github_org_id,
+                            "login": org.github_org_slug,
+                        },
+                        "installation": {"id": installation.installation_id},
+                        "sender": {"login": "developer"},
+                    }
+                }),
+            }
+        ]
+
+        # Mock can_track_repo to return False (at limit)
+        mock_session_factory = MagicMock(return_value=db)
+
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
+            with patch("app.services.plan_limits.can_track_repo", return_value=False):
+                result = handle_sqs_webhooks(records)
+
+        # Should not create a new run
+        final_count = db.query(WorkflowRun).filter(
+            WorkflowRun.org_id == org.id
+        ).count()
+
+        assert final_count == initial_count
+        assert len(result["batchItemFailures"]) == 0  # No errors
+
+    def test_workflow_run_processed_when_below_limit(self, db, sample_data):
+        """Test workflow_run is processed when org is below repo limit."""
+        from app.workers.handler import handle_sqs_webhooks
+        from app.models.workflow_run import WorkflowRun
+
+        org = sample_data["organizations"][0]
+        installation = sample_data["installations"][0]
+
+        records = [
+            {
+                "messageId": "msg-below-limit",
+                "body": json.dumps({
+                    "event_type": "workflow_run",
+                    "action": "completed",
+                    "delivery_id": "test-delivery-below",
+                    "payload": {
+                        "action": "completed",
+                        "workflow_run": {
+                            "id": 444555666,
+                            "name": "CI Pipeline",
+                            "run_number": 50,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "event": "push",
+                            "actor": {"login": "developer"},
+                            "created_at": "2024-12-21T12:00:00Z",
+                            "updated_at": "2024-12-21T12:10:00Z",
+                        },
+                        "repository": {
+                            "id": 88888,
+                            "name": "allowed-repo",
+                            "full_name": "acme-corp/allowed-repo",
+                        },
+                        "organization": {
+                            "id": org.github_org_id,
+                            "login": org.github_org_slug,
+                        },
+                        "installation": {"id": installation.installation_id},
+                        "sender": {"login": "developer"},
+                    }
+                }),
+            }
+        ]
+
+        mock_session_factory = MagicMock(return_value=db)
+
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
+            with patch("app.services.plan_limits.can_track_repo", return_value=True):
+                result = handle_sqs_webhooks(records)
+
+        # Should process without failures
+        assert len(result["batchItemFailures"]) == 0
+
+    def test_workflow_job_skipped_at_repo_limit(self, db, sample_data):
+        """Test workflow_job is skipped when org is at repo limit."""
+        from app.workers.handler import handle_sqs_webhooks
+        from app.models.job import Job
+
+        org = sample_data["organizations"][0]
+
+        # Get initial job count
+        initial_count = db.query(Job).filter(Job.org_id == org.id).count()
+
+        records = [
+            {
+                "messageId": "msg-job-limit",
+                "body": json.dumps({
+                    "event_type": "workflow_job",
+                    "action": "completed",
+                    "delivery_id": "test-job-delivery",
+                    "payload": {
+                        "action": "completed",
+                        "workflow_job": {
+                            "id": 777888999,
+                            "run_id": 123456789,
+                            "name": "build",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "labels": ["ubuntu-latest"],
+                            "created_at": "2024-12-21T12:00:00Z",
+                            "started_at": "2024-12-21T12:00:30Z",
+                            "completed_at": "2024-12-21T12:05:30Z",
+                        },
+                        "repository": {
+                            "id": 99999,
+                            "name": "limit-repo",
+                            "full_name": "acme-corp/limit-repo",
+                        },
+                        "organization": {
+                            "id": org.github_org_id,
+                            "login": org.github_org_slug,
+                        },
+                        "sender": {"login": "developer"},
+                    }
+                }),
+            }
+        ]
+
+        mock_session_factory = MagicMock(return_value=db)
+
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
+            with patch("app.services.plan_limits.can_track_repo", return_value=False):
+                result = handle_sqs_webhooks(records)
+
+        # Should not create a new job
+        final_count = db.query(Job).filter(Job.org_id == org.id).count()
+        assert final_count == initial_count
+        assert len(result["batchItemFailures"]) == 0
+
+    def test_existing_repo_allowed_even_at_limit(self, db, sample_data):
+        """Test that existing repos can still receive events when at limit."""
+        from app.workers.handler import handle_sqs_webhooks
+
+        org = sample_data["organizations"][0]
+        installation = sample_data["installations"][0]
+
+        # Use existing repo from sample data
+        existing_run = sample_data["workflow_runs"][0]
+        existing_repo_name = existing_run.repo_name
+
+        records = [
+            {
+                "messageId": "msg-existing-repo",
+                "body": json.dumps({
+                    "event_type": "workflow_run",
+                    "action": "completed",
+                    "delivery_id": "test-existing-delivery",
+                    "payload": {
+                        "action": "completed",
+                        "workflow_run": {
+                            "id": 999888777,
+                            "name": "CI",
+                            "run_number": 100,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "event": "push",
+                            "actor": {"login": "developer"},
+                            "created_at": "2024-12-21T12:00:00Z",
+                            "updated_at": "2024-12-21T12:10:00Z",
+                        },
+                        "repository": {
+                            "id": 12345,
+                            "name": existing_repo_name,
+                            "full_name": existing_repo_name,
+                        },
+                        "organization": {
+                            "id": org.github_org_id,
+                            "login": org.github_org_slug,
+                        },
+                        "installation": {"id": installation.installation_id},
+                        "sender": {"login": "developer"},
+                    }
+                }),
+            }
+        ]
+
+        mock_session_factory = MagicMock(return_value=db)
+
+        # can_track_repo should return True for existing repos even at limit
+        with patch("app.database.get_session_local", return_value=mock_session_factory):
+            with patch("app.services.plan_limits.can_track_repo", return_value=True):
+                result = handle_sqs_webhooks(records)
+
+        # Should process successfully
+        assert len(result["batchItemFailures"]) == 0
+
+
 class TestCostCalculation:
     """Tests for cost calculation in worker."""
 

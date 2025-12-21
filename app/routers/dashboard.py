@@ -13,6 +13,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, CurrentUser
 from app.models.workflow_run import WorkflowRun
 from app.models.job import Job
+from app.services.plan_limits import get_effective_history_days, get_history_start_date
 
 router = APIRouter()
 
@@ -137,7 +138,7 @@ async def get_cost_summary(
 @router.get("/trends", response_model=List[DailyCost])
 async def get_cost_trends(
     org_id: UUID = Query(..., description="Organization ID"),
-    days: int = Query(30, ge=7, le=90, description="Number of days"),
+    days: int = Query(30, ge=7, le=365, description="Number of days"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -145,9 +146,13 @@ async def get_cost_trends(
     Get daily cost data for the specified number of days.
 
     Used for the cost trend chart.
+    Note: Days are capped based on subscription tier (Free: 30, Pro/Team: 365).
     """
+    # Enforce plan limits on history
+    effective_days = get_effective_history_days(db, org_id, days)
+
     now = datetime.utcnow()
-    start_date = now - timedelta(days=days)
+    start_date = now - timedelta(days=effective_days)
 
     # Query daily costs
     results = db.query(
@@ -185,16 +190,20 @@ async def get_cost_trends(
 @router.get("/top-workflows", response_model=List[TopWorkflow])
 async def get_top_workflows(
     org_id: UUID = Query(..., description="Organization ID"),
-    days: int = Query(30, ge=1, le=90, description="Number of days to look back"),
+    days: int = Query(30, ge=1, le=365, description="Number of days to look back"),
     limit: int = Query(5, ge=1, le=20, description="Number of workflows to return"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Get top workflows by cost for the specified period.
+    Note: Days are capped based on subscription tier (Free: 30, Pro/Team: 365).
     """
+    # Enforce plan limits on history
+    effective_days = get_effective_history_days(db, org_id, days)
+
     now = datetime.utcnow()
-    start_date = now - timedelta(days=days)
+    start_date = now - timedelta(days=effective_days)
 
     # Query aggregated workflow data
     results = db.query(
@@ -291,7 +300,7 @@ async def get_recent_runs(
 @router.get("/workflows", response_model=WorkflowsResponse)
 async def get_workflows(
     org_id: UUID = Query(..., description="Organization ID"),
-    days: int = Query(30, ge=1, le=90, description="Number of days to look back"),
+    days: int = Query(30, ge=1, le=365, description="Number of days to look back"),
     repo: Optional[str] = Query(None, description="Filter by repository name"),
     status: Optional[str] = Query(None, description="Filter by status: all, success, failed"),
     sort_by: str = Query("total_cost", description="Sort by: name, repo, last_run, run_count, total_cost, avg_duration, success_rate"),
@@ -305,9 +314,13 @@ async def get_workflows(
 
     Supports filtering by repository, status, and search.
     Supports sorting by any column.
+    Note: Days are capped based on subscription tier (Free: 30, Pro/Team: 365).
     """
+    # Enforce plan limits on history
+    effective_days = get_effective_history_days(db, org_id, days)
+
     now = datetime.utcnow()
-    start_date = now - timedelta(days=days)
+    start_date = now - timedelta(days=effective_days)
 
     # Build base query with aggregations
     # Calculate success rate as percentage of runs with conclusion='success'
@@ -428,15 +441,19 @@ async def get_workflows(
 @router.get("/workflows/summary", response_model=WorkflowsSummary)
 async def get_workflows_summary(
     org_id: UUID = Query(..., description="Organization ID"),
-    days: int = Query(30, ge=1, le=90, description="Number of days to look back"),
+    days: int = Query(30, ge=1, le=365, description="Number of days to look back"),
     current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Get summary statistics for all workflows.
+    Note: Days are capped based on subscription tier (Free: 30, Pro/Team: 365).
     """
+    # Enforce plan limits on history
+    effective_days = get_effective_history_days(db, org_id, days)
+
     now = datetime.utcnow()
-    start_date = now - timedelta(days=days)
+    start_date = now - timedelta(days=effective_days)
 
     # Count unique workflows
     workflow_count = db.query(

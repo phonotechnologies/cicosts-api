@@ -144,6 +144,7 @@ def _process_workflow_run(payload: dict) -> None:
     from app.database import get_session_local
     from app.models.workflow_run import WorkflowRun
     from app.models.organization import Organization
+    from app.services.plan_limits import can_track_repo
 
     action = payload.get("action")
     run = payload.get("workflow_run", {})
@@ -171,6 +172,15 @@ def _process_workflow_run(payload: dict) -> None:
 
         if not org:
             logger.warning(f"Organization not found: {organization.get('login')}")
+            return
+
+        # Check repo limit before tracking new repo
+        repo_name = repository.get("full_name", repository.get("name", ""))
+        if not can_track_repo(db, org.id, repo_name):
+            logger.warning(
+                f"Organization {org.github_org_slug} at repo limit, "
+                f"skipping workflow run from {repo_name}"
+            )
             return
 
         # Parse timestamps
@@ -245,6 +255,7 @@ def _process_workflow_job(payload: dict) -> None:
     from app.models.workflow_run import WorkflowRun
     from app.models.organization import Organization
     from app.services.cost_calculator import calculate_job_cost
+    from app.services.plan_limits import can_track_repo
 
     action = payload.get("action")
     job = payload.get("workflow_job", {})
@@ -273,6 +284,15 @@ def _process_workflow_job(payload: dict) -> None:
 
         if not org:
             logger.warning(f"Organization not found: {organization.get('login')}")
+            return
+
+        # Check repo limit before tracking new repo
+        repo_name = repository.get("full_name", repository.get("name", ""))
+        if not can_track_repo(db, org.id, repo_name):
+            logger.warning(
+                f"Organization {org.github_org_slug} at repo limit, "
+                f"skipping job from {repo_name}"
+            )
             return
 
         # Ensure workflow_run exists (job events can arrive before workflow_run events)
