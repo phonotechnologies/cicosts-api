@@ -3,22 +3,32 @@ CICosts API - FastAPI Application
 
 Main entry point for the API.
 """
-import logging
-import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from slowapi.errors import RateLimitExceeded
+
 from app.config import settings as app_settings
 from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing, limits
-
-# Configure logging for Lambda/CloudWatch
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s - %(name)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+from app.middleware.rate_limit import (
+    RateLimitMiddleware,
+    limiter,
+    rate_limit_exceeded_handler,
 )
-logger = logging.getLogger(__name__)
+from app.services.logging_service import (
+    configure_logging,
+    get_logger,
+    RequestLoggingMiddleware,
+)
+
+# Configure structured logging for Lambda/CloudWatch
+# Use JSON format in production, plain text in development
+configure_logging(
+    level="INFO",
+    json_format=app_settings.ENVIRONMENT in ("prod", "staging"),
+)
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -58,6 +68,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request logging middleware (adds request ID and timing)
+app.add_middleware(RequestLoggingMiddleware)
+
+# Rate limiting middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(RateLimitMiddleware)
 
 # Include routers
 app.include_router(health.router, tags=["Health"])
