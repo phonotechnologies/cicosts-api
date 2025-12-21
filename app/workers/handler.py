@@ -275,6 +275,32 @@ def _process_workflow_job(payload: dict) -> None:
             logger.warning(f"Organization not found: {organization.get('login')}")
             return
 
+        # Ensure workflow_run exists (job events can arrive before workflow_run events)
+        existing_run = db.query(WorkflowRun).filter(
+            WorkflowRun.github_run_id == run_id,
+            WorkflowRun.org_id == org.id,
+        ).first()
+
+        if not existing_run:
+            # Create a minimal workflow_run record so the job can reference it
+            workflow_run = WorkflowRun(
+                id=uuid4(),
+                github_run_id=run_id,
+                org_id=org.id,
+                repo_name=repository.get("full_name", repository.get("name", "")),
+                workflow_name=job.get("workflow_name", "Unknown"),
+                status="in_progress",  # Will be updated when workflow_run event arrives
+                conclusion=None,
+                event="unknown",
+                actor=None,
+                branch=None,
+                created_at=datetime.utcnow(),
+                total_cost_usd=0,
+            )
+            db.add(workflow_run)
+            db.flush()
+            logger.info(f"Created placeholder workflow_run {run_id} for job {job.get('id')}")
+
         # Parse timestamps
         created_at = _parse_github_timestamp(job.get("created_at"))
         started_at = _parse_github_timestamp(job.get("started_at"))
