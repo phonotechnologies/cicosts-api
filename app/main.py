@@ -3,12 +3,22 @@ CICosts API - FastAPI Application
 
 Main entry point for the API.
 """
+import logging
+import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings as app_settings
 from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing
+
+# Configure logging for Lambda/CloudWatch
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s - %(name)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
