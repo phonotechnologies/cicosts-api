@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings as app_settings
-from app.routers import health, auth, webhooks, dashboard, alerts, settings
+from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing
 
 
 @asynccontextmanager
@@ -56,6 +56,7 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["Webhooks"]
 app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["Alerts"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["Settings"])
+app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 
 
 @app.get("/")

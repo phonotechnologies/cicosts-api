@@ -100,3 +100,33 @@ def get_api_secrets() -> dict:
 def get_database_secrets() -> dict:
     """Get database secrets (DATABASE_URL)."""
     return get_secret(settings.SECRETS_DATABASE_ARN)
+
+
+def get_stripe_secrets() -> dict:
+    """
+    Get Stripe secrets from API secrets.
+
+    Expected keys in api-secrets:
+    - stripe_secret_key or STRIPE_SECRET_KEY
+    - stripe_webhook_secret or STRIPE_WEBHOOK_SECRET
+    - stripe_publishable_key or STRIPE_PUBLISHABLE_KEY
+    - stripe_pro_monthly_price_id or STRIPE_PRO_MONTHLY_PRICE_ID
+    - stripe_pro_annual_price_id or STRIPE_PRO_ANNUAL_PRICE_ID
+    - stripe_team_monthly_price_id or STRIPE_TEAM_MONTHLY_PRICE_ID
+    - stripe_team_annual_price_id or STRIPE_TEAM_ANNUAL_PRICE_ID
+    """
+    api_secrets = get_api_secrets()
+
+    # Normalize keys (support both lowercase and uppercase)
+    def get_key(name: str) -> str:
+        return api_secrets.get(name) or api_secrets.get(name.upper()) or api_secrets.get(name.lower()) or ""
+
+    return {
+        "secret_key": get_key("stripe_secret_key"),
+        "webhook_secret": get_key("stripe_webhook_secret"),
+        "publishable_key": get_key("stripe_publishable_key"),
+        "pro_monthly_price_id": get_key("stripe_pro_monthly_price_id"),
+        "pro_annual_price_id": get_key("stripe_pro_annual_price_id"),
+        "team_monthly_price_id": get_key("stripe_team_monthly_price_id"),
+        "team_annual_price_id": get_key("stripe_team_annual_price_id"),
+    }

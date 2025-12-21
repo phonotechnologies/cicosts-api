@@ -108,16 +108,136 @@ async def stripe_webhook(
 
     Events:
     - checkout.session.completed
+    - customer.subscription.created
     - customer.subscription.updated
     - customer.subscription.deleted
+    - invoice.paid
     - invoice.payment_failed
     """
+    from uuid import UUID
+    from datetime import datetime
+    from app.database import get_session_local
+    from app.models.organization import Organization
+    from app.services import stripe_service
+
     payload = await request.body()
 
-    # TODO: Implement Stripe signature verification
-    # TODO: Process subscription events
+    # Verify signature
+    if not stripe_signature:
+        raise HTTPException(status_code=401, detail="Missing Stripe signature")
 
-    return {"status": "received"}
+    try:
+        event = stripe_service.verify_webhook_signature(payload, stripe_signature)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid signature: {str(e)}")
+
+    event_type = event.get("type", "")
+    data = event.get("data", {}).get("object", {})
+
+    # Get database session
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+
+    try:
+        if event_type == "checkout.session.completed":
+            # User completed checkout - create/update subscription
+            org_id = data.get("metadata", {}).get("org_id")
+            customer_id = data.get("customer")
+            subscription_id = data.get("subscription")
+
+            if org_id and customer_id:
+                org = db.query(Organization).filter(Organization.id == UUID(org_id)).first()
+                if org:
+                    # Get subscription to determine tier
+                    subscription = stripe_service.get_subscription(subscription_id)
+                    price_id = subscription.get("items", {}).get("data", [{}])[0].get("price", {}).get("id", "")
+                    tier = stripe_service.determine_tier_from_price(price_id)
+
+                    org.stripe_customer_id = customer_id
+                    org.subscription_tier = tier
+                    org.trial_converted = True
+                    db.commit()
+                    print(f"[Stripe] Org {org_id} upgraded to {tier}")
+
+        elif event_type == "customer.subscription.created":
+            # New subscription created
+            customer_id = data.get("customer")
+            price_id = data.get("items", {}).get("data", [{}])[0].get("price", {}).get("id", "")
+            org_id = data.get("metadata", {}).get("org_id")
+
+            if org_id:
+                org = db.query(Organization).filter(Organization.id == UUID(org_id)).first()
+                if org:
+                    tier = stripe_service.determine_tier_from_price(price_id)
+                    org.subscription_tier = tier
+                    org.stripe_customer_id = customer_id
+                    db.commit()
+                    print(f"[Stripe] Subscription created for org {org_id}: {tier}")
+
+        elif event_type == "customer.subscription.updated":
+            # Subscription changed (upgrade/downgrade)
+            customer_id = data.get("customer")
+            status = data.get("status")
+            price_id = data.get("items", {}).get("data", [{}])[0].get("price", {}).get("id", "")
+
+            org = db.query(Organization).filter(
+                Organization.stripe_customer_id == customer_id
+            ).first()
+
+            if org:
+                if status == "active":
+                    tier = stripe_service.determine_tier_from_price(price_id)
+                    org.subscription_tier = tier
+                elif status in ["canceled", "unpaid", "past_due"]:
+                    org.subscription_tier = "free"
+                db.commit()
+                print(f"[Stripe] Subscription updated for org {org.id}: {org.subscription_tier}")
+
+        elif event_type == "customer.subscription.deleted":
+            # Subscription canceled
+            customer_id = data.get("customer")
+
+            org = db.query(Organization).filter(
+                Organization.stripe_customer_id == customer_id
+            ).first()
+
+            if org:
+                org.subscription_tier = "free"
+                db.commit()
+                print(f"[Stripe] Subscription deleted for org {org.id}")
+
+        elif event_type == "invoice.paid":
+            # Payment successful - ensure subscription is active
+            customer_id = data.get("customer")
+            subscription_id = data.get("subscription")
+
+            if subscription_id:
+                org = db.query(Organization).filter(
+                    Organization.stripe_customer_id == customer_id
+                ).first()
+
+                if org:
+                    subscription = stripe_service.get_subscription(subscription_id)
+                    price_id = subscription.get("items", {}).get("data", [{}])[0].get("price", {}).get("id", "")
+                    tier = stripe_service.determine_tier_from_price(price_id)
+                    org.subscription_tier = tier
+                    db.commit()
+                    print(f"[Stripe] Invoice paid for org {org.id}")
+
+        elif event_type == "invoice.payment_failed":
+            # Payment failed - could send notification
+            customer_id = data.get("customer")
+            print(f"[Stripe] Payment failed for customer {customer_id}")
+            # TODO: Send email notification about failed payment
+
+    except Exception as e:
+        db.rollback()
+        print(f"[Stripe] Error processing webhook: {e}")
+        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+    finally:
+        db.close()
+
+    return {"status": "received", "event_type": event_type}
 
 
 def _get_account_id() -> str:
