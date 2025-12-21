@@ -383,7 +383,20 @@ def _process_installation(payload: dict) -> None:
                     Organization.github_org_id == account.get("id")
                 ).first()
 
-                org_id = org.id if org else None
+                if not org:
+                    # Create the organization automatically
+                    org = Organization(
+                        id=uuid4(),
+                        github_org_id=account.get("id"),
+                        github_org_slug=account.get("login", ""),
+                        github_org_name=account.get("login", ""),  # Will be updated later
+                        github_avatar_url=account.get("avatar_url"),
+                        subscription_tier="free",
+                        created_at=datetime.utcnow(),
+                    )
+                    db.add(org)
+                    db.flush()  # Get the org.id before creating installation
+                    logger.info(f"Created organization {account.get('login')} (github_org_id: {account.get('id')})")
 
                 # Create new installation
                 new_installation = GitHubInstallation(
@@ -392,7 +405,7 @@ def _process_installation(payload: dict) -> None:
                     account_id=account.get("id"),
                     account_type=account.get("type", "Organization"),
                     account_login=account.get("login", ""),
-                    org_id=org_id,
+                    org_id=org.id,
                     target_type=installation.get("target_type", "Organization"),
                     repository_selection=installation.get("repository_selection", "all"),
                     permissions=json.dumps(installation.get("permissions", {})),
