@@ -1,4 +1,5 @@
 """Alert service for checking and triggering alerts."""
+import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
@@ -10,6 +11,11 @@ from sqlalchemy.orm import Session
 from app.models.alert import Alert, AlertPeriod
 from app.models.alert_trigger import AlertTrigger
 from app.models.workflow_run import WorkflowRun
+from app.models.user import User
+from app.models.organization import Organization
+from app.models.org_membership import OrgMembership
+
+logger = logging.getLogger(__name__)
 
 
 class AlertService:
@@ -108,13 +114,53 @@ class AlertService:
         # Trigger the alert
         return self.trigger_alert(alert, actual_cost)
 
+    def _get_alert_recipients(self, org_id: UUID) -> List[str]:
+        """
+        Get email addresses for alert notifications.
+
+        Returns emails of org owners/admins who have alert_emails_enabled.
+        Falls back to organization billing_email if no eligible users.
+
+        Args:
+            org_id: Organization ID
+
+        Returns:
+            List of email addresses to notify
+        """
+        # Query org members who are owners/admins and have alerts enabled
+        eligible_members = self.db.query(User).join(
+            OrgMembership, OrgMembership.user_id == User.id
+        ).filter(
+            OrgMembership.org_id == org_id,
+            OrgMembership.role.in_(["owner", "admin"]),
+            User.alert_emails_enabled == True,
+            User.is_deleted == False
+        ).all()
+
+        recipients = []
+        for user in eligible_members:
+            # Use notification_email if set, otherwise primary email
+            email = user.notification_email or user.email
+            if email and email not in recipients:
+                recipients.append(email)
+
+        # Fallback to org billing_email if no eligible members
+        if not recipients:
+            org = self.db.query(Organization).filter(
+                Organization.id == org_id
+            ).first()
+            if org and org.billing_email:
+                recipients.append(org.billing_email)
+
+        return recipients
+
     def trigger_alert(
         self,
         alert: Alert,
         actual_amount: Decimal
     ) -> AlertTrigger:
         """
-        Create an alert trigger record and queue notification.
+        Create an alert trigger record and send notifications.
 
         Args:
             alert: Alert that was triggered
@@ -142,15 +188,136 @@ class AlertService:
         self.db.commit()
         self.db.refresh(trigger)
 
-        # TODO: Queue notification task
-        # This would typically send the notification via email/Slack
-        # For now, we just create the trigger record
-        # In production, you'd want to:
-        # 1. Send email if alert.notify_email is True
-        # 2. Send Slack message if alert.notify_slack is True
-        # 3. Update trigger.notified = True after successful send
+        # Send notifications
+        notification_sent = False
+
+        # Send email notification if enabled
+        if alert.notify_email:
+            try:
+                from app.services.email_service import get_email_service
+
+                recipients = self._get_alert_recipients(alert.org_id)
+                if recipients:
+                    email_service = get_email_service()
+
+                    # Prepare alert data for email template
+                    alert_data = {
+                        "name": alert.name,
+                        "threshold": float(alert.threshold_amount),
+                        "period": alert.period.value,
+                        "recipients": recipients,
+                    }
+
+                    # Prepare trigger data for email template
+                    trigger_data = {
+                        "current_cost": float(actual_amount),
+                        "triggered_at": now.isoformat(),
+                    }
+
+                    result = email_service.send_alert_notification(alert_data, trigger_data)
+
+                    if result.get("success"):
+                        notification_sent = True
+                        logger.info(
+                            f"Alert notification sent: {alert.name} to {len(recipients)} recipients"
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to send alert notification: {result.get('error')}"
+                        )
+                else:
+                    logger.warning(
+                        f"No recipients found for alert {alert.name} (org_id: {alert.org_id})"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error sending alert email: {e}", exc_info=True)
+
+        # Send Slack notification if enabled
+        if alert.notify_slack and alert.slack_webhook_url:
+            try:
+                self._send_slack_notification(alert, actual_amount)
+                notification_sent = True
+            except Exception as e:
+                logger.error(f"Error sending Slack notification: {e}", exc_info=True)
+
+        # Update trigger as notified if any notification was sent
+        if notification_sent:
+            trigger.notified = True
+            self.db.commit()
 
         return trigger
+
+    def _send_slack_notification(
+        self,
+        alert: Alert,
+        actual_amount: Decimal
+    ) -> None:
+        """
+        Send Slack webhook notification.
+
+        Args:
+            alert: Alert that was triggered
+            actual_amount: Actual cost amount
+        """
+        import httpx
+
+        if not alert.slack_webhook_url:
+            return
+
+        payload = {
+            "text": f":warning: *Cost Alert Triggered*",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f":warning: {alert.name}",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Current Cost:*\n${actual_amount:.2f}"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Threshold:*\n${alert.threshold_amount:.2f}"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Period:*\n{alert.period.value.capitalize()}"
+                        }
+                    ]
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View Dashboard",
+                                "emoji": True
+                            },
+                            "url": "https://app.cicosts.dev/dashboard"
+                        }
+                    ]
+                }
+            ]
+        }
+
+        with httpx.Client() as client:
+            response = client.post(
+                alert.slack_webhook_url,
+                json=payload,
+                timeout=10.0
+            )
+            response.raise_for_status()
+            logger.info(f"Slack notification sent for alert: {alert.name}")
 
     def get_alert_triggers(
         self,
