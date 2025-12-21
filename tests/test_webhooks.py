@@ -280,11 +280,30 @@ class TestStripeWebhooks:
 
     def test_stripe_webhook_received(self, client):
         """Test Stripe webhook endpoint exists and receives events."""
+        from unittest.mock import patch
+
+        # Mock stripe verification to return a valid event
+        with patch("app.services.stripe_service.verify_webhook_signature") as mock_verify:
+            mock_verify.return_value = {
+                "type": "checkout.session.completed",
+                "data": {"object": {}}
+            }
+
+            response = client.post(
+                "/api/v1/webhooks/stripe",
+                json={"type": "checkout.session.completed"},
+                headers={"Stripe-Signature": "test_signature"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "received"
+
+    def test_stripe_webhook_missing_signature(self, client):
+        """Test Stripe webhook rejects requests without signature."""
         response = client.post(
             "/api/v1/webhooks/stripe",
             json={"type": "checkout.session.completed"}
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "received"
+        assert response.status_code == 401
