@@ -149,3 +149,4 @@ cd package && zip -r ../lambda-package.zip .
 - [spec-cost-calculation.md](../docs/spec-cost-calculation.md) - Cost calculation logic
 - [spec-error-handling.md](../docs/spec-error-handling.md) - Error handling, webhooks
 <!-- Test 1766296647 -->
+<!-- Final test 1766296867 -->
