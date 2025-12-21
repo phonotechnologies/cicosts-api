@@ -148,3 +148,4 @@ cd package && zip -r ../lambda-package.zip .
 - [spec-data-lifecycle.md](../docs/spec-data-lifecycle.md) - Data retention, trials, soft delete
 - [spec-cost-calculation.md](../docs/spec-cost-calculation.md) - Cost calculation logic
 - [spec-error-handling.md](../docs/spec-error-handling.md) - Error handling, webhooks
+<!-- Test 1766296647 -->
