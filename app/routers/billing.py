@@ -84,6 +84,9 @@ async def create_checkout(
 
     Returns URL to redirect user to Stripe Checkout.
     """
+    print(f"[BILLING] Checkout request received: org_id={request.org_id}, price_id={request.price_id}")
+    print(f"[BILLING] User: user_id={current_user.user_id}, email={current_user.email}")
+
     # Verify user has access to this org
     membership = db.query(OrgMembership).filter(
         OrgMembership.user_id == current_user.user_id,
@@ -91,21 +94,30 @@ async def create_checkout(
     ).first()
 
     if not membership:
+        print(f"[BILLING ERROR] User {current_user.user_id} is not a member of org {request.org_id}")
         raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+    print(f"[BILLING] Membership found: role={membership.role}")
 
     # Only admins/owners can manage billing
     if membership.role not in ["admin", "owner"]:
+        print(f"[BILLING ERROR] User role {membership.role} cannot manage billing")
         raise HTTPException(status_code=403, detail="Only admins can manage billing")
 
     # Get organization
     org = db.query(Organization).filter(Organization.id == request.org_id).first()
     if not org:
+        print(f"[BILLING ERROR] Organization {request.org_id} not found")
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    print(f"[BILLING] Organization found: {org.github_org_slug}")
 
     # Validate price ID
     valid_prices = stripe_service.get_price_ids()
     valid_price_list = [v for v in valid_prices.values() if v]
+    print(f"[BILLING] Valid prices: {valid_price_list}")
     if request.price_id not in valid_price_list:
+        print(f"[BILLING ERROR] Invalid price ID: {request.price_id}")
         raise HTTPException(status_code=400, detail="Invalid price ID")
 
     try:
