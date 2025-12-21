@@ -3,17 +3,25 @@ Stripe service for payment operations.
 
 Handles checkout sessions, customer management, and subscription operations.
 """
+import logging
 import stripe
 from typing import Optional
 from uuid import UUID
 
 from app.config import get_stripe_secrets, settings
 
+logger = logging.getLogger(__name__)
+
 
 def _get_stripe_client() -> None:
     """Initialize Stripe with API key."""
     secrets = get_stripe_secrets()
-    stripe.api_key = secrets.get("secret_key", "")
+    api_key = secrets.get("secret_key", "")
+    if api_key:
+        logger.info(f"Stripe API key loaded: {api_key[:10]}...{api_key[-4:]}")
+    else:
+        logger.error("Stripe API key is empty!")
+    stripe.api_key = api_key
 
 
 def get_price_ids() -> dict:
@@ -65,8 +73,14 @@ def create_checkout_session(
     else:
         session_params["customer_email"] = customer_email
 
-    session = stripe.checkout.Session.create(**session_params)
-    return session.url
+    logger.info(f"Creating Stripe checkout session with params: price_id={price_id}, org_id={org_id}")
+    try:
+        session = stripe.checkout.Session.create(**session_params)
+        logger.info(f"Stripe checkout session created: {session.id}")
+        return session.url
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe API error: {type(e).__name__}: {e.user_message if hasattr(e, 'user_message') else str(e)}")
+        raise
 
 
 def create_portal_session(stripe_customer_id: str) -> str:

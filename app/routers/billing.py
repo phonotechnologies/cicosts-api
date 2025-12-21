@@ -3,6 +3,7 @@ Billing endpoints.
 
 Handles Stripe checkout, subscription management, and customer portal.
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -13,6 +14,8 @@ from app.dependencies import get_current_user, CurrentUser
 from app.models.organization import Organization
 from app.models.org_membership import OrgMembership
 from app.services import stripe_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -106,6 +109,7 @@ async def create_checkout(
         raise HTTPException(status_code=400, detail="Invalid price ID")
 
     try:
+        logger.info(f"Creating checkout session for org={org.id}, price_id={request.price_id}")
         checkout_url = stripe_service.create_checkout_session(
             price_id=request.price_id,
             org_id=org.id,
@@ -113,8 +117,10 @@ async def create_checkout(
             customer_email=current_user.email,
             stripe_customer_id=org.stripe_customer_id,
         )
+        logger.info(f"Checkout session created successfully: {checkout_url[:50]}...")
         return CheckoutResponse(checkout_url=checkout_url)
     except Exception as e:
+        logger.error(f"Checkout failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create checkout: {str(e)}")
 
 
