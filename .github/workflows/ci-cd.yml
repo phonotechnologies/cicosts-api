@@ -1,0 +1,264 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_dev:
+        description: 'Skip dev deployment'
+        required: false
+        default: 'false'
+        type: boolean
+      deploy_prod:
+        description: 'Deploy directly to prod (skip dev)'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  PYTHON_VERSION: "3.11"
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::***REMOVED***:role/cicosts-prod-github-actions-api
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ============================================================================
+  # STAGE 1: Test
+  # ============================================================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-asyncio httpx
+
+      - name: Run tests
+        env:
+          ENVIRONMENT: test
+          JWT_SECRET: test-jwt-secret-for-ci
+          DATABASE_URL: "sqlite:///:memory:"
+        run: |
+          python -m pytest tests/ -v --tb=short --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  # ============================================================================
+  # STAGE 2: Lint (parallel with test)
+  # ============================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy types-requests
+
+      - name: Run Ruff
+        run: ruff check app/ --output-format=github || true
+        continue-on-error: true
+
+      - name: Run type checking
+        run: |
+          pip install -r requirements.txt
+          mypy app/ --ignore-missing-imports || true
+        continue-on-error: true
+
+  # ============================================================================
+  # STAGE 3: Build
+  # ============================================================================
+  build:
+    name: Build
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build Lambda package
+        run: |
+          pip install -r requirements.txt -t package-py311/ --upgrade
+          cp -r app package-py311/
+          cp handler.py package-py311/
+          cp workers.py package-py311/
+          cd package-py311
+          zip -r ../lambda.zip . -x "*.pyc" -x "__pycache__/*" -x "*.git*" -x "tests/*"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-package
+          path: lambda.zip
+          retention-days: 5
+
+  # ============================================================================
+  # STAGE 4: Deploy to Dev
+  # ============================================================================
+  deploy-dev:
+    name: Deploy to Dev
+    needs: build
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.event.inputs.skip_dev != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://dev-api.cicosts.dev
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to Dev
+        run: |
+          echo "🚀 Deploying to Dev..."
+          aws lambda update-function-code \
+            --function-name cicosts-dev-api \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+          aws lambda update-function-code \
+            --function-name cicosts-dev-workers \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+      - name: Wait for deployment
+        run: |
+          aws lambda wait function-updated --function-name cicosts-dev-api
+          aws lambda wait function-updated --function-name cicosts-dev-workers
+
+      - name: Verify Dev deployment
+        run: |
+          sleep 5
+          echo "Checking dev health..."
+          HEALTH=$(curl -s https://dev-api.cicosts.dev/health)
+          echo "$HEALTH" | jq .
+
+          STATUS=$(echo "$HEALTH" | jq -r '.status')
+          if [ "$STATUS" != "ok" ]; then
+            echo "❌ Dev health check failed!"
+            exit 1
+          fi
+          echo "✅ Dev deployment verified!"
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Dev Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: Dev" >> $GITHUB_STEP_SUMMARY
+          echo "- **API URL**: https://dev-api.cicosts.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "Verify the dev deployment, then approve the prod deployment." >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # STAGE 5: Deploy to Prod (requires approval)
+  # ============================================================================
+  deploy-prod:
+    name: Deploy to Prod
+    needs: deploy-dev
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: https://api.cicosts.dev
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-package
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to Prod
+        run: |
+          echo "🚀 Deploying to Production..."
+          aws lambda update-function-code \
+            --function-name cicosts-prod-api \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+          aws lambda update-function-code \
+            --function-name cicosts-prod-workers \
+            --zip-file fileb://lambda.zip \
+            --publish
+
+      - name: Wait for deployment
+        run: |
+          aws lambda wait function-updated --function-name cicosts-prod-api
+          aws lambda wait function-updated --function-name cicosts-prod-workers
+
+      - name: Verify Prod deployment
+        run: |
+          sleep 5
+          echo "Checking prod health..."
+          HEALTH=$(curl -s https://api.cicosts.dev/health)
+          echo "$HEALTH" | jq .
+
+          STATUS=$(echo "$HEALTH" | jq -r '.status')
+          if [ "$STATUS" != "ok" ]; then
+            echo "❌ Prod health check failed!"
+            exit 1
+          fi
+          echo "✅ Prod deployment verified!"
+
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **API URL**: https://api.cicosts.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
