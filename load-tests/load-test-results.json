@@ -1,0 +1,14 @@
+{
+  "timestamp": "2025-12-22T06:32:39.043Z",
+  "environment": "https://dev-api.cicosts.dev",
+  "metrics": {
+    "totalRequests": 12485,
+    "failedRequests": 1555,
+    "avgDuration": "81.41",
+    "p95Duration": "168.20",
+    "p99Duration": 0,
+    "maxDuration": "1675.42",
+    "errorRate": "12.45%"
+  },
+  "thresholds": {}
+}
