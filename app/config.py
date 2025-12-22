@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     # Sentry
     SENTRY_DSN: str = ""
 
-    # Redis (optional)
-    UPSTASH_REDIS_URL: str = ""
+    # Upstash Redis (for rate limiting)
+    UPSTASH_REDIS_REST_URL: str = ""
+    UPSTASH_REDIS_REST_TOKEN: str = ""
 
     # AWS SES Email
     SES_FROM_EMAIL: str = "noreply@cicosts.dev"
@@ -100,6 +101,24 @@ def get_api_secrets() -> dict:
 def get_database_secrets() -> dict:
     """Get database secrets (DATABASE_URL)."""
     return get_secret(settings.SECRETS_DATABASE_ARN)
+
+
+def get_upstash_secrets() -> dict:
+    """
+    Get Upstash Redis secrets from API secrets or environment.
+
+    Falls back to environment variables if not in Secrets Manager.
+    """
+    api_secrets = get_api_secrets()
+
+    # Try secrets first, then fall back to env vars
+    url = api_secrets.get("upstash_redis_rest_url") or settings.UPSTASH_REDIS_REST_URL
+    token = api_secrets.get("upstash_redis_rest_token") or settings.UPSTASH_REDIS_REST_TOKEN
+
+    return {
+        "url": url,
+        "token": token,
+    }
 
 
 def get_stripe_secrets() -> dict:

@@ -1,36 +1,26 @@
 """
 Rate limiting middleware for CICosts API.
 
-Implements tier-based rate limits:
+Implements tier-based rate limits using Upstash Redis:
 - Free: 60 requests/minute
 - Pro: 300 requests/minute
 - Team: 600 requests/minute
 
-Uses in-memory storage by default (resets on Lambda cold start).
-Can be configured to use Redis for distributed rate limiting.
+Uses Redis for distributed rate limiting across Lambda instances.
+Falls back to allowing requests if Redis is unavailable.
 """
 import logging
-from typing import Optional, Callable
-from uuid import UUID
+from typing import Callable
 
 from fastapi import Request, Response
-from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from app.services.redis_rate_limiter import rate_limiter, TIER_RATE_LIMITS, DEFAULT_RATE_LIMIT
+
 logger = logging.getLogger(__name__)
-
-# Rate limits per tier (requests per minute)
-TIER_RATE_LIMITS = {
-    "free": "60/minute",
-    "pro": "300/minute",
-    "team": "600/minute",
-}
-
-# Default rate limit for unauthenticated requests
-DEFAULT_RATE_LIMIT = "30/minute"
 
 # Exempt paths (webhooks, health checks)
 EXEMPT_PATHS = [
@@ -73,17 +63,8 @@ def get_tier_from_request(request: Request) -> str:
     return getattr(request.state, "tier", "free")
 
 
-# Create limiter instance with in-memory storage
-# Note: For Lambda, this resets on cold starts. Use Redis for production.
-limiter = Limiter(
-    key_func=get_rate_limit_key,
-    default_limits=[DEFAULT_RATE_LIMIT],
-    storage_uri="memory://",
-)
-
-
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
-    """Handle rate limit exceeded errors."""
+    """Handle rate limit exceeded errors (for slowapi compatibility)."""
     logger.warning(
         f"Rate limit exceeded for {get_rate_limit_key(request)}: {exc.detail}"
     )
@@ -103,7 +84,7 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Res
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    Middleware to apply tier-based rate limiting.
+    Middleware to apply tier-based rate limiting using Redis.
 
     Rate limits are applied based on the organization's subscription tier.
     Webhooks and health checks are exempt.
@@ -118,46 +99,46 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        # Get the rate limit key
+        # Get the rate limit key and tier
         key = get_rate_limit_key(request)
-
-        # Get the tier-based rate limit
         tier = get_tier_from_request(request)
-        rate_limit = TIER_RATE_LIMITS.get(tier, DEFAULT_RATE_LIMIT)
 
-        # Check if rate limited
-        # Note: In production, you'd check against Redis here
-        # For now, we'll add headers but not block (see below for enforcement)
+        # Check rate limit using Redis
+        result = rate_limiter.check_rate_limit(key, tier)
 
-        # Add rate limit headers to response
+        if not result.allowed:
+            logger.warning(
+                f"Rate limit exceeded for {key} (tier: {tier}, limit: {result.limit}/min)"
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "rate_limit_exceeded",
+                    "message": "Too many requests. Please try again later.",
+                    "retry_after": result.retry_after or 60,
+                },
+                headers={
+                    "Retry-After": str(result.retry_after or 60),
+                    "X-RateLimit-Limit": str(result.limit),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(result.reset_at),
+                    "X-RateLimit-Tier": tier,
+                },
+            )
+
+        # Process the request
         response = await call_next(request)
 
-        # Add informational headers
+        # Add rate limit headers to response
+        response.headers["X-RateLimit-Limit"] = str(result.limit)
+        response.headers["X-RateLimit-Remaining"] = str(result.remaining)
+        response.headers["X-RateLimit-Reset"] = str(result.reset_at)
         response.headers["X-RateLimit-Tier"] = tier
-        response.headers["X-RateLimit-Limit"] = rate_limit
 
         return response
 
 
-def apply_rate_limit(tier: str = "free"):
-    """
-    Decorator to apply rate limiting to specific endpoints.
-
-    Usage:
-        @router.get("/endpoint")
-        @limiter.limit(dynamic_limit_provider)
-        async def endpoint(...):
-            ...
-    """
-    return limiter.limit(TIER_RATE_LIMITS.get(tier, DEFAULT_RATE_LIMIT))
-
-
-def get_dynamic_limit(key: str) -> str:
-    """
-    Get dynamic rate limit based on tier.
-
-    This function is called by slowapi to determine the rate limit.
-    """
-    # Parse the tier from the key or use default
-    # In practice, you'd look up the org's tier from the database
-    return DEFAULT_RATE_LIMIT
+def get_rate_limit_for_tier(tier: str) -> str:
+    """Get the rate limit string for a tier (for documentation)."""
+    limit = TIER_RATE_LIMITS.get(tier, DEFAULT_RATE_LIMIT)
+    return f"{limit}/minute"

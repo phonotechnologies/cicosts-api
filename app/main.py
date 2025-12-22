@@ -8,8 +8,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import sentry_sdk
 
-from slowapi.errors import RateLimitExceeded
-
 from app.config import settings as app_settings
 
 # Initialize Sentry for error tracking (prod/staging only)
@@ -21,11 +19,7 @@ if app_settings.ENVIRONMENT in ("prod", "staging"):
         traces_sample_rate=0.1,  # 10% of requests for performance monitoring
     )
 from app.routers import health, auth, webhooks, dashboard, alerts, settings, billing, limits
-from app.middleware.rate_limit import (
-    RateLimitMiddleware,
-    limiter,
-    rate_limit_exceeded_handler,
-)
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.services.logging_service import (
     configure_logging,
     get_logger,
@@ -82,9 +76,7 @@ app.add_middleware(
 # Request logging middleware (adds request ID and timing)
 app.add_middleware(RequestLoggingMiddleware)
 
-# Rate limiting middleware
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+# Rate limiting middleware (uses Upstash Redis for distributed limits)
 app.add_middleware(RateLimitMiddleware)
 
 # Include routers

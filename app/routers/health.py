@@ -7,6 +7,7 @@ from fastapi import APIRouter
 import httpx
 
 from app.config import settings
+from app.services.redis_rate_limiter import rate_limiter
 
 router = APIRouter()
 
@@ -46,7 +47,16 @@ async def health_check():
     else:
         checks["database"] = "not_configured"
 
-    # Determine overall status
+    # Test Redis connection
+    try:
+        if rate_limiter.is_healthy():
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "not_configured"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)[:100]}"
+
+    # Determine overall status (Redis is optional, so it doesn't affect status)
     status = "ok" if checks.get("database") == "ok" else "degraded"
 
     return {
