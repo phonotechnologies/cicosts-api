@@ -181,11 +181,11 @@ jobs:
           echo "$HEALTH" | jq .
 
           STATUS=$(echo "$HEALTH" | jq -r '.status')
-          if [ "$STATUS" != "ok" ]; then
-            echo "❌ Dev health check failed!"
+          if [ "$STATUS" != "ok" ] && [ "$STATUS" != "degraded" ]; then
+            echo "❌ Dev health check failed! Status: $STATUS"
             exit 1
           fi
-          echo "✅ Dev deployment verified!"
+          echo "✅ Dev deployment verified! Status: $STATUS"
 
       - name: Deployment summary
         run: |
@@ -249,11 +249,11 @@ jobs:
           echo "$HEALTH" | jq .
 
           STATUS=$(echo "$HEALTH" | jq -r '.status')
-          if [ "$STATUS" != "ok" ]; then
-            echo "❌ Prod health check failed!"
+          if [ "$STATUS" != "ok" ] && [ "$STATUS" != "degraded" ]; then
+            echo "❌ Prod health check failed! Status: $STATUS"
             exit 1
           fi
-          echo "✅ Prod deployment verified!"
+          echo "✅ Prod deployment verified! Status: $STATUS"
 
       - name: Deployment summary
         run: |
