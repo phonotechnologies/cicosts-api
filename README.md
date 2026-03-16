@@ -1,11 +1,14 @@
 # CICosts API
 
-[![API Tests](https://github.com/phonotechnologies/cicosts-api/actions/workflows/api-tests.yml/badge.svg)](https://github.com/phonotechnologies/cicosts-api/actions/workflows/api-tests.yml)
-[![CI/CD](https://github.com/phonotechnologies/cicosts-api/actions/workflows/deploy.yml/badge.svg)](https://github.com/phonotechnologies/cicosts-api/actions/workflows/deploy.yml)
+[![CI/CD](https://github.com/phonotechnologies/cicosts-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/phonotechnologies/cicosts-api/actions/workflows/ci-cd.yml)
 
 FastAPI backend for CICosts - Track and optimize your CI/CD costs.
 
-**Live:** https://api.cicosts.dev
+| Environment | URL |
+|-------------|-----|
+| Production | https://api.cicosts.dev |
+| Development | https://dev-api.cicosts.dev |
+| API Docs | https://dev-api.cicosts.dev/docs |
 
 ## Architecture
 
@@ -228,12 +231,27 @@ GitHub Actions runner pricing (per minute):
 | macos-latest-large | $0.120 |
 | ubuntu-latest-arm | $0.005 |
 
-## Deployment
+## CI/CD Pipeline
 
-Auto-deploys to AWS Lambda via GitHub Actions on push to `main`.
+Unified pipeline via `.github/workflows/ci-cd.yml`:
+
+```
+Push to main → Test → Lint → Build → Deploy Dev → Deploy Prod
+                                           ↓
+                                   (requires approval)
+```
+
+| Stage | Description |
+|-------|-------------|
+| Test | pytest with coverage + Codecov upload |
+| Lint | ruff + mypy (non-blocking) |
+| Build | Create Lambda package → upload artifact |
+| Deploy Dev | Update `cicosts-dev-api` + `cicosts-dev-workers` |
+| Deploy Prod | Update `cicosts-prod-api` + `cicosts-prod-workers` (requires approval) |
+
+### Manual Deployment
 
 ```bash
-# Manual deployment
 pip install -r requirements.txt -t package/
 cp -r app package/
 cp handler.py workers.py package/

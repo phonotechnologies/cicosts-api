@@ -21,7 +21,7 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::***REMOVED***:role/cicosts-prod-github-actions-api
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 
 permissions:
   id-token: write
