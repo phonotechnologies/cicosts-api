@@ -44,9 +44,14 @@ env/
 htmlcov/
 .tox/
 
-# Lambda package
+# Lambda packages and build artifacts
 package/
+package-py311/
+package-deploy/
 lambda-package.zip
+lambda.zip
+lambda-dev.zip
+lambda-updated.zip
 
 # OS
 .DS_Store

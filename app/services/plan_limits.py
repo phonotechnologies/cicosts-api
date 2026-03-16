@@ -37,21 +37,28 @@ class UsageStatus:
 
 
 # Tier definitions
+# CICosts is open source and free for everyone.
+# Enterprise tier is for organizations that need SLA, dedicated support, or custom integrations.
 PLAN_LIMITS = {
     "free": PlanLimits(
-        max_repos=3,
-        max_history_days=30,
-        max_team_members=1,
+        max_repos=None,       # Unlimited
+        max_history_days=365,
+        max_team_members=None,  # Unlimited
     ),
     "pro": PlanLimits(
-        max_repos=None,  # Unlimited
+        max_repos=None,
         max_history_days=365,
-        max_team_members=1,
+        max_team_members=None,
     ),
     "team": PlanLimits(
-        max_repos=None,  # Unlimited
+        max_repos=None,
         max_history_days=365,
-        max_team_members=5,
+        max_team_members=None,
+    ),
+    "enterprise": PlanLimits(
+        max_repos=None,
+        max_history_days=365,
+        max_team_members=None,
     ),
 }
 
